@@ -24,6 +24,7 @@ def run(args) -> int:
             res = seeder.collect_seeds(
                 worktree, max_len=getattr(args, "max_len", None)
             )
+            seeder.merge_mode_seeds(res, probe_res.mode)
             out = records.out_dir_for(out_root, sel.lang, repo.name, sha, sel.raw)
             n_seeds = seeder.write_corpus(res.seeds, out / "corpus")
             notes = []

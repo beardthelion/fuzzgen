@@ -200,6 +200,30 @@ def go_fuzz_v1(seed: bytes) -> str:
     return f'go test fuzz v1\n[]byte("{escaped}")\n'
 
 
+def mode_seeds(mode: str | None) -> list[tuple[bytes, str]]:
+    """Structure-aware generated seeds for ssz/rlp modes (KTD10)."""
+    if mode == "ssz":
+        from . import sszgen
+
+        return sszgen.generate()
+    if mode == "rlp":
+        from . import rlpgen
+
+        return rlpgen.generate()
+    return []
+
+
+def merge_mode_seeds(res: SeedResult, mode: str | None) -> None:
+    import hashlib
+
+    seen = {hashlib.sha1(s.data).hexdigest() for s in res.seeds}
+    for data, klass in mode_seeds(mode):
+        h = hashlib.sha1(data).hexdigest()
+        if h not in seen:
+            seen.add(h)
+            res.seeds.append(Seed(data, f"generated:{klass}"))
+
+
 def write_corpus(seeds: list[Seed], corpus_dir: Path) -> int:
     corpus_dir.mkdir(parents=True, exist_ok=True)
     for i, s in enumerate(seeds):

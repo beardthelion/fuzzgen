@@ -87,6 +87,7 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     fuzz = gen.fuzz_name
 
     seeds = seeder.collect_seeds(worktree, max_len=getattr(args, "max_len", None))
+    seeder.merge_mode_seeds(seeds, fields.get("mode"))
     seeder.write_corpus(seeds.seeds, out_dir / "corpus")
     if fields.get("mode") in ("bytes",) and len(probe_args(fields)) <= 1:
         seeder.write_go_testdata(seeds.seeds, pkg_dir, fuzz)
