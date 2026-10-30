@@ -8,3 +8,4 @@ bin/
 fuzzgen-out/
 fuzzgen-work/
 .pytest_cache/
+target/
