@@ -7,6 +7,20 @@ import pytest
 
 
 @pytest.fixture
+def work_root(tmp_path_factory):
+    """A work root under the real KTD2 location ($XDG_CACHE_HOME), not /tmp."""
+    import os
+    import shutil
+    import uuid
+
+    xdg = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    root = xdg / "fuzzgen-test" / uuid.uuid4().hex[:12]
+    root.mkdir(parents=True)
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture
 def fixture_repo(tmp_path):
     """Minimal git repo a unit can treat as a fuzz target."""
     import subprocess
