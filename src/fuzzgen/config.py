@@ -25,9 +25,14 @@ def default_out_dir(cwd: Path | None = None) -> Path:
     return (cwd or Path.cwd()) / OUT_DIR_NAME
 
 
-def work_root(cwd: Path | None = None) -> Path:
+def work_root(cwd: Path | None = None, mechanism: str | None = None) -> Path:
     import os
 
+    # The nobody rung must traverse into the worktree; user-private dirs
+    # (~/.cache is 0700) block it, so bounded-not-contained work roots live
+    # under world-traversable /var/tmp (on-disk, not the tmpfs /tmp precedent).
+    if mechanism == "bounded-not-contained":
+        return Path("/var/tmp") / f"fuzzgen-{os.getuid()}-work"
     xdg = os.environ.get("XDG_CACHE_HOME")
     base = Path(xdg) if xdg else (cwd or Path.cwd())
     return base / WORK_DIR_NAME

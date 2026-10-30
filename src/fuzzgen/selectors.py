@@ -35,15 +35,12 @@ def parse_selector(raw: str, lang_hint: str | None = None) -> Selector:
     m = re.match(r"^(.+\.[ch]|.+\.[ch]pp|.*\.cc):([A-Za-z_][A-Za-z0-9_]*)$", raw)
     if m:
         return Selector(raw, "c", m.group(1), m.group(2))
-    if "/" in raw or lang_hint == "go":
-        seg = raw.rsplit(".", 1)
-        if len(seg) == 2:
-            return Selector(raw, "go", seg[0], seg[1])
-        # pkg/path.Type.Method
-        m2 = re.match(r"^(.+)\.([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$", raw)
-        if m2:
-            return Selector(raw, "go", m2.group(1), m2.group(3), recv=m2.group(2))
-        raise ValueError(f"unparseable go selector {raw!r}")
+    m2 = re.match(r"^(.+)\.([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$", raw)
+    if m2:
+        return Selector(raw, "go", m2.group(1), m2.group(3), recv=m2.group(2))
+    m3 = re.match(r"^([A-Za-z0-9_./-]+)\.([A-Za-z_][A-Za-z0-9_]*)$", raw)
+    if m3 and ("/" in raw or lang_hint in (None, "go")):
+        return Selector(raw, "go", m3.group(1), m3.group(2))
     raise ValueError(f"unparseable selector {raw!r}")
 
 

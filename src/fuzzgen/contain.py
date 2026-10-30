@@ -149,8 +149,8 @@ def contained_argv(
                 *env_args]
         rl = rlimits or {}
         if rl:
-            argv += ["prlimit"] + [f"--{k}={v}" for k, v in rl.items() if k in NOBODY_RLIMITS]
-        return argv + ["--", *cmd]
+            argv += ["prlimit"] + [f"--{k}={v}" for k, v in rl.items() if k in NOBODY_RLIMITS] + ["--"]
+        return argv + [*cmd]
 
     if mechanism == MECH_NONE:
         return ["env", "-i", f"HOME={wd}", *[f"{k}={v}" for k, v in sorted(env.items())], *cmd]
