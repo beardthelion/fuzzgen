@@ -39,6 +39,11 @@ def rust_lane_available() -> tuple[bool, str]:
 
 
 def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGenResult:
+    if sel.recv:
+        return RustGenResult(
+            "NEEDS-HAND",
+            reason="method selector: receiver construction is target-specific",
+        )
     dirs = rust_crate_dirs(worktree, sel.package)
     if not dirs:
         return RustGenResult("PROBE-FAIL", reason=f"crate {sel.package} not found")
@@ -48,7 +53,8 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGe
     name = f"fuzzgen_{sel.name}"
     parts = sel.raw.split("::")
     path = "::".join(parts[1:-1] + [parts[-1]]) if len(parts) > 2 else sel.name
-    src = TMPL.read_text().replace("{{.Crate}}", sel.package).replace("{{.Path}}", path)
+    crate_ident = sel.package.replace("-", "_")
+    src = TMPL.read_text().replace("{{.Crate}}", crate_ident).replace("{{.Path}}", path)
     (fuzz_dir / f"{name}.rs").write_text(src)
     return RustGenResult("OK", target_path=fuzz_dir / f"{name}.rs")
 

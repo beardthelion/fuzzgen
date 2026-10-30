@@ -39,9 +39,9 @@ def _go_repo(tmp_path):
     return repo
 
 
-def test_all_over_two_targets(tmp_path, work_root):
+def test_all_over_two_targets(tmp_path, work_root, monkeypatch):
     repo = _go_repo(tmp_path)
-    config.work_root = lambda **kw: work_root
+    monkeypatch.setattr(config, "work_root", lambda **kw: work_root)
     out = tmp_path / "out"
     rc = cli.run(
         [
@@ -57,9 +57,9 @@ def test_all_over_two_targets(tmp_path, work_root):
     assert rc == cli.EXIT_PARTIAL
 
 
-def test_all_disk_cap(tmp_path, work_root):
+def test_all_disk_cap(tmp_path, work_root, monkeypatch):
     repo = _go_repo(tmp_path)
-    config.work_root = lambda **kw: work_root
+    monkeypatch.setattr(config, "work_root", lambda **kw: work_root)
     out = tmp_path / "out"
     (out / "filler").mkdir(parents=True)
     (out / "filler" / "big.bin").write_bytes(b"x" * (3 << 20))
@@ -73,8 +73,8 @@ def test_all_disk_cap(tmp_path, work_root):
     assert doc["targets"][0]["status"] == "DISK-CAP"
 
 
-def test_all_empty_list_stops(tmp_path, work_root):
+def test_all_empty_list_stops(tmp_path, work_root, monkeypatch):
     repo = _go_repo(tmp_path)
-    config.work_root = lambda **kw: work_root
+    monkeypatch.setattr(config, "work_root", lambda **kw: work_root)
     rc = cli.run(["all", "--repo", str(repo), "--out-dir", str(tmp_path / "o")])
     assert rc == cli.EXIT_ENV

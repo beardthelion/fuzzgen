@@ -26,10 +26,12 @@ def test_ladder_falls_to_bwrap():
     assert mech == contain.MECH_BWRAP and denied
 
 
-def test_ladder_unshare_when_bwrap_absent():
+def test_ladder_unshare_is_not_selected():
+    # Bare unshare shares the host mount namespace with mapped root:
+    # less containment than nobody, so detect() never selects it.
     probe = make_probe({("unshare", "--user", "--map-root-user", "--net", "true")})
     mech, denied, _ = contain.detect(probe=probe, image_present=True)
-    assert mech == contain.MECH_UNSHARE and denied
+    assert mech == contain.MECH_REFUSE and not denied
 
 
 def test_ladder_nobody_is_bounded_not_contained():
@@ -62,11 +64,8 @@ def test_scrub_env_strips_credentials():
         "FUZZGEN_RUST_PROBE": "/x",
     }
     clean = contain.scrub_env(env)
-    assert clean == {
-        "PATH": "/usr/bin",
-        "GOMEMLIMIT": "1GiB",
-        "FUZZGEN_RUST_PROBE": "/x",
-    }
+    # FUZZGEN_* is host-local state (probe paths); it never crosses either.
+    assert clean == {"PATH": "/usr/bin", "GOMEMLIMIT": "1GiB"}
 
 
 def test_credential_free_mounts():

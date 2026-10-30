@@ -110,6 +110,9 @@ func main() {
 
 	if *recv != "" {
 		obj := scope.Lookup(*recv)
+		if obj == nil {
+			fail(fmt.Sprintf("type %s not found", *recv))
+		}
 		named, ok := obj.Type().(*types.Named)
 		if !ok {
 			fail(fmt.Sprintf("type %s not found", *recv))

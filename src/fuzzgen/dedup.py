@@ -63,5 +63,7 @@ def write_crash_record(out: Path, rec: CrashRecord, run_fields: dict) -> Path:
         repro_verified=rec.repro_verified,
         min_broke=rec.min_broke,
     )
+    # repro is the record dir itself — the portable replay target.
+    run_fields["repro"] = f"fuzzgen replay {d}"
     _records.write_json(d / "run.json", _records.run_record(**run_fields))
     return d

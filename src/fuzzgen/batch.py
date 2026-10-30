@@ -71,17 +71,33 @@ def run(args) -> int:
         os.environ["FUZZGEN_RUN_ID"] = run_id
         rc = cli.run(argv)
         produced_results = True
-        # Re-read the target's summary row written by run.
+        # Read only this run's summary at its known path; a stale row
+        # from an older run must never stand in for a dead run.
+        from .selectors import parse_selector
+
         summary = None
-        for p in sorted(out_root.rglob("summary.json"), key=lambda p: p.stat().st_mtime):
-            try:
-                doc = json.loads(p.read_text())
-            except json.JSONDecodeError:
-                continue
-            for row in doc.get("targets", []):
-                if row.get("target") == t.selector:
-                    summary = row
-        rows.append(summary or records.target_row(t.selector, "RUN-FAIL"))
+        try:
+            sel = parse_selector(t.selector, getattr(args, "lang", None))
+            sha = ""
+            for p in sorted(out_root.rglob("summary.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    doc = json.loads(p.read_text())
+                except json.JSONDecodeError:
+                    continue
+                if doc.get("run_id") != run_id:
+                    continue
+                for row in doc.get("targets", []):
+                    if row.get("target") == t.selector:
+                        summary = row
+                        break
+                if summary:
+                    break
+        except ValueError:
+            summary = records.target_row(t.selector, "RUN-FAIL",
+                                       notes="unparseable selector")
+        if summary is None or rc == cli.EXIT_ENV:
+            summary = summary or records.target_row(t.selector, "RUN-FAIL")
+        rows.append(summary)
 
     aggregate = records.summary_doc(
         run_id, str(Path(args.repo).resolve()),

@@ -19,6 +19,7 @@ from .records import bound_text
 
 DEFAULT_PROCESS_TIMEOUT = 900
 CAPTURE_LIMIT = 1 << 20  # 1 MiB total captured output
+DRAIN_TIMEOUT = 30
 
 
 @dataclass
@@ -67,19 +68,46 @@ def run_bounded(
     except subprocess.TimeoutExpired:
         res.timed_out = True
         _kill_tree(proc)
-        out, err = proc.communicate()
+        try:
+            # A setsid'd grandchild can hold the pipes; bound the drain.
+            out, err = proc.communicate(timeout=DRAIN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            res.error = "child escaped kill; output pipes never drained"
+            for stream in (proc.stdout, proc.stderr):
+                try:
+                    if stream:
+                        stream.close()
+                except OSError:
+                    pass
+            out = proc.stdout.read() if proc.stdout and not proc.stdout.closed else b""
+            err = proc.stderr.read() if proc.stderr and not proc.stderr.closed else b""
 
     res.duration_s = time.monotonic() - start
-    res.stdout = bound_text(out[:capture_limit].decode("utf-8", errors="replace"))
-    res.stderr = bound_text(err[:capture_limit].decode("utf-8", errors="replace"))
+    res.stdout = bound_text((out or b"")[:capture_limit].decode("utf-8", errors="replace"))
+    res.stderr = bound_text((err or b"")[:capture_limit].decode("utf-8", errors="replace"))
     return res
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except OSError:
-            pass
+        return
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        pass
+    except OSError:
+        pass
+    # EPERM on killpg: contained children run under another uid (nobody
+    # rung). Escalate once via passwordless sudo to kill the group.
+    try:
+        subprocess.run(
+            ["sudo", "-n", "kill", "-s", "KILL", "--", f"-{proc.pid}"],
+            capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass

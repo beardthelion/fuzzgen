@@ -50,7 +50,12 @@ def _cgroup_measure(argv, cwd, env, mem_max_mb: int | None) -> Measure | None:
         except OSError:
             pass
         t0 = time.monotonic()
-        proc.wait(timeout=3600)
+        try:
+            proc.communicate(timeout=3600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate(timeout=30)
+            return None  # fall through to the next rung with the child dead
         wall = int((time.monotonic() - t0) * 1000)
         try:
             peak = int((cg / "memory.peak").read_text().strip()) >> 10
@@ -86,8 +91,13 @@ def _time_v_measure(argv, cwd, env, mem_max_mb) -> Measure | None:
 
 
 def _getrusage_measure(argv, cwd, env, mem_max_mb) -> Measure:
+    # RUSAGE_CHILDREN is cumulative: ru_maxrss is an upper bound on this
+    # child's peak, honest as a worst-case floor measurement.
     t0 = time.monotonic()
-    proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=3600)
+    try:
+        proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return Measure(None, 3600_000, False, "getrusage", None)
     wall = int((time.monotonic() - t0) * 1000)
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     return Measure(usage.ru_maxrss, wall, False, "getrusage", proc.returncode)
@@ -156,5 +166,11 @@ def write_resource_record(
         ratio = measure.peak_rss_kb * 1024 / max(len(input_bytes), 1)
         rec_fields["ratio"] = f"RATIO: {ratio:.1f}x input"
         rec_fields["reach_by"] = f"REACH_BY: {reach_by or 'unknown'}"
-    records.write_json(d / "run.json", records.run_record(**rec_fields))
+    doc = records.run_record(**rec_fields)
+    # run_record's schema keeps only its fields; measurement provenance
+    # the contract promises is merged back in explicitly.
+    doc["capped"] = measure.capped
+    doc["wall_ms"] = measure.wall_ms
+    doc["measure_source"] = measure.source
+    records.write_json(d / "run.json", doc)
     return d

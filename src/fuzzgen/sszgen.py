@@ -39,6 +39,7 @@ def valid_container(m: SszModel, list_len: int = 3) -> bytes:
     cursor += len(list_payload)
     if m.bitlist:
         parts.append(u32(cursor))
+        cursor += 1  # bitlist tail is a single terminator byte
     if m.union_selector is not None:
         parts.append(u32(cursor))
     parts.append(list_payload)

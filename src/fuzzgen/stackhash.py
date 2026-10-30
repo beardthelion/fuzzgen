@@ -47,18 +47,20 @@ def go_stack(stderr: str) -> list[str]:
     for line in stderr.splitlines():
         s = line.strip()
         if s.startswith("goroutine"):
+            if in_stack or frames:
+                break  # only the crashing goroutine's frames hash
             in_stack = True
             continue
         if not in_stack:
             continue
-        m = re.match(r"^([\w./-]+(?:\.\w+)+)\s*\(", s)
+        m = re.match(r"^([\w./-]+(?:\(\*?\w+\))?\.[\w.<>]+)\s*\(", s)
         if m:
             fn = m.group(1)
-            if not fn.startswith(("runtime.", "testing.", "internal/fuzz.")):
+            if not fn.startswith(GO_IGNORE):
                 frames.append(fn)
-        elif s.startswith("/") or s.endswith(".go"):
+        elif s.startswith("/") or s.endswith(".go") or s.startswith("created by"):
             continue
-        elif s == "" or s.startswith("created by"):
+        elif s == "":
             in_stack = False
     return frames
 
@@ -134,6 +136,16 @@ def classify_kind(lang: str, stderr: str, exit_code: int | None = None) -> str:
     return "fatal-error"
 
 
-def stack_hash(kind: str, frames: list[str]) -> str:
+def stack_hash(kind: str, frames: list[str], stderr: str = "") -> str:
     top = frames[:5]
+    if not top:
+        # No symbolized frames: mix the crash headline so distinct
+        # failures split rather than collapse into sha1(kind + "|").
+        for line in stderr.splitlines():
+            s = line.strip()
+            if s.startswith(("panic:", "fatal error:", "==ERROR==", "runtime error:")):
+                top = [s[:200]]
+                break
+        if not top:
+            top = [stderr.strip().splitlines()[0][:200]] if stderr.strip() else []
     return hashlib.sha1((kind + "|" + "|".join(top)).encode()).hexdigest()[:16]

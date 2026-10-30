@@ -112,6 +112,9 @@ def run(argv: list[str] | None = None) -> int:
     except Stopped as exc:
         sys.stderr.write(f"fuzzgen: stopped: {exc}\n")
         return EXIT_ENV
+    except ValueError as exc:
+        sys.stderr.write(f"fuzzgen: stopped: {exc}\n")
+        return EXIT_USAGE
 
 
 def _dispatch(args: argparse.Namespace) -> int:

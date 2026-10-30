@@ -148,18 +148,27 @@ def collect_seeds(
         seen.add(h)
         res.seeds.append(Seed(data, source))
 
-    for p in sorted(root.rglob("*")):
+    # os.walk with followlinks=False: rglob on <=3.12 recurses into
+    # symlinked dirs, so a committed `ln -s . loop` hangs before the
+    # file-level confinement checks ever run.
+    import os as _os
+
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in _os.walk(root, followlinks=False):
+        dirnames[:] = [
+            d for d in dirnames
+            if not _os.path.islink(_os.path.join(dirpath, d)) and d != ".git"
+        ]
+        for f in filenames:
+            files.append(Path(dirpath) / f)
+    for p in sorted(files):
         if not p.is_file():
-            if p.is_symlink():
-                res.skipped_symlinks += 1
             continue
         if p.is_symlink():
             res.skipped_symlinks += 1
             continue
         if _real_under(root, p) is None:
             res.skipped_symlinks += 1
-            continue
-        if ".git" in p.parts:
             continue
         ext = p.suffix.lower()
         if _is_fixture_path(root, p) and ext in BLOB_EXTS:
@@ -191,13 +200,14 @@ def collect_seeds(
     return res
 
 
-def go_fuzz_v1(seed: bytes) -> str:
-    """Encode a raw seed as a go test fuzz v1 corpus file (single []byte arg)."""
+def go_fuzz_v1(seed: bytes, kind: str = "bytes") -> str:
+    """Encode a raw seed as a go test fuzz v1 corpus file."""
     escaped = "".join(
         chr(b) if 32 <= b < 127 and chr(b) not in '"\\' else f"\\x{b:02x}"
         for b in seed
     )
-    return f'go test fuzz v1\n[]byte("{escaped}")\n'
+    typ = "string" if kind == "string" else "[]byte"
+    return f'go test fuzz v1\n{typ}("{escaped}")\n'
 
 
 def mode_seeds(mode: str | None) -> list[tuple[bytes, str]]:
@@ -232,10 +242,11 @@ def write_corpus(seeds: list[Seed], corpus_dir: Path) -> int:
     return len(seeds)
 
 
-def write_go_testdata(seeds: list[Seed], pkg_dir: Path, fuzz_name: str) -> int:
+def write_go_testdata(seeds: list[Seed], pkg_dir: Path, fuzz_name: str,
+                      kind: str = "bytes") -> int:
     """Emit go test fuzz v1 files into testdata/fuzz/<FuzzName>/ (single-arg only)."""
     out = pkg_dir / "testdata" / "fuzz" / fuzz_name
     out.mkdir(parents=True, exist_ok=True)
     for i, s in enumerate(seeds):
-        (out / f"seed{i}").write_text(go_fuzz_v1(s.data))
+        (out / f"seed{i}").write_text(go_fuzz_v1(s.data, kind=kind))
     return len(seeds)

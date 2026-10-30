@@ -137,6 +137,15 @@ def _dedup_key(row: dict) -> tuple:
     )
 
 
+def _promotable(rec: dict) -> bool:
+    """Only real crash/resource records promote: kind + hash + evidence."""
+    if rec.get("kind") not in records.KINDS:
+        return False
+    if not rec.get("stack_hash"):
+        return False
+    return bool(rec.get("repro_verified") or rec.get("incomplete"))
+
+
 def run(args) -> int:
     out_root = Path(args.out_dir).resolve()
     if not out_root.is_dir():
@@ -147,14 +156,20 @@ def run(args) -> int:
 
     repo_arg = args.repo
     if not repo_arg:
-        try:
-            repo_arg = json.loads(records_files[0].read_text()).get("repo_path")
-        except json.JSONDecodeError:
-            pass
-    if not repo_arg:
-        raise Stopped("--repo required (run.json repo_path unavailable)")
+        raise Stopped("--repo required (record dirs do not prove which repo)")
     repo = Path(repo_arg).resolve()
     findings_dir = repo / ".clawpatch" / "findings"
+    # .clawpatch or findings must never be a symlink to elsewhere.
+    import os as _os
+    for comp in (repo / ".clawpatch", findings_dir):
+        if comp.is_symlink():
+            raise Stopped(f"{comp} is a symlink; refusing to write outside the repo")
+    try:
+        findings_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Stopped(f"cannot create {findings_dir}: {exc}")
+    if _os.path.commonpath([str(repo), str(findings_dir.resolve())]) != str(repo):
+        raise Stopped(f"{findings_dir} resolves outside the repo")
 
     written, skipped, failed = 0, 0, 0
     with _lock(findings_dir):
@@ -171,6 +186,9 @@ def run(args) -> int:
             except json.JSONDecodeError:
                 failed += 1
                 continue
+            if not _promotable(rec):
+                skipped += 1
+                continue
             row = _finding_for(rec, record_dir, repo)
             key = _dedup_key(row)
             if key in existing_keys:
@@ -186,7 +204,9 @@ def run(args) -> int:
             existing_keys.add(key)
             written += 1
     sys.stderr.write(
-        f"fuzzgen: promote: {written} written, {skipped} dedup-skipped, "
+        f"fuzzgen: promote: {written} written, {skipped} skipped, "
         f"{failed} failed into {findings_dir}\n"
     )
+    if failed:
+        return EXIT_PARTIAL
     return EXIT_OK if written or skipped else EXIT_PARTIAL

@@ -16,10 +16,12 @@ def run(args) -> int:
         raise Stopped(f"{root} is not a directory")
     rows: list[dict] = []
     crashes = 0
+    corrupt = 0
     for summary in sorted(root.rglob("summary.json")):
         try:
             doc = json.loads(summary.read_text())
         except json.JSONDecodeError:
+            corrupt += 1
             continue
         for row in doc.get("targets", []):
             rows.append(row)
@@ -38,6 +40,8 @@ def run(args) -> int:
         rewritten += 1
     sys.stderr.write(
         f"fuzzgen: triage: {rewritten} summaries rebuilt, {crashes} crashes, "
-        f"{len(rows)} targets\n"
+        f"{len(rows)} targets, {corrupt} corrupt\n"
     )
+    if corrupt:
+        return EXIT_PARTIAL
     return EXIT_OK if rewritten else EXIT_PARTIAL

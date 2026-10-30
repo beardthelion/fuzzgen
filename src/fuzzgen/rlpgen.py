@@ -28,8 +28,8 @@ def rlp_list(items: list[bytes]) -> bytes:
 
 
 def nest(depth: int) -> bytes:
-    """Nested empty lists to bounded depth (recursive-decoder exercise)."""
-    out = b""
+    """Nested lists to exactly ``depth`` levels of wrapping."""
+    out = rlp_str(b"")
     for _ in range(depth):
         out = rlp_list([out])
     return out

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 from . import config, contain, gitops, stackhash
 from .cli import EXIT_OK, EXIT_PARTIAL, Stopped
-from .gen import prepare
 from .probe import probe_signature
 from .selectors import parse_selector
 
@@ -23,6 +23,8 @@ def run(args) -> int:
         rec = json.loads(run_json.read_text())
     except json.JSONDecodeError as exc:
         raise Stopped(f"{run_json} is not JSON: {exc}")
+    if not rec.get("git_sha"):
+        raise Stopped("record has no git_sha; cannot pin the replay revision")
 
     input_path = record_dir / "min.bin"
     if not input_path.is_file():
@@ -38,27 +40,32 @@ def run(args) -> int:
         )
     if rec.get("lang") != "go":
         raise Stopped(f"replay for {rec.get('lang')} lands with its lane")
+    try:
+        sel = parse_selector(rec["target"], "go")
+    except (KeyError, ValueError) as exc:
+        raise Stopped(f"malformed record target: {exc}")
 
     mech, denied, _ = contain.detect()
     if mech == contain.MECH_REFUSE:
         raise Stopped("no containment mechanism for the replay build")
     work_root = config.work_root(mechanism=mech)
-    worktree, _ = gitops.worktree_add_detached(
-        repo, sha=rec.get("git_sha"), work_root=work_root
-    )
+    try:
+        worktree, _ = gitops.worktree_add_detached(
+            repo, sha=rec["git_sha"], work_root=work_root
+        )
+    except gitops.GitError as exc:
+        raise Stopped(f"replay worktree add failed: {exc}")
+    work_dir = Path(tempfile.mkdtemp(dir=work_root, prefix="replay-"))
     try:
         from .lanes import go as golane
 
-        sel = parse_selector(rec["target"], "go")
         pres = probe_signature(sel, worktree)
         if pres.status != "OK":
             raise Stopped(f"replay probe failed: {pres.reason}")
         gen = golane.gen_harness(sel, pres, worktree)
         if gen.status != "OK":
             raise Stopped(f"replay gen failed: {gen.reason}")
-        work_dir = Path(tempfile.mkdtemp(dir=work_root, prefix="replay-"))
         golane.provision_for_rung(mech, worktree, work_dir)
-        # Stage the input as a fuzz v1 corpus file and run it once.
         from . import seeder
 
         staged = (
@@ -66,10 +73,13 @@ def run(args) -> int:
         )
         staged.parent.mkdir(parents=True, exist_ok=True)
         golane.provision_for_rung(mech, staged.parent)
-        staged.write_text(seeder.go_fuzz_v1(input_path.read_bytes()))
+        arg_kind = "string" if (pres.args or [""])[0] == "string" else "bytes"
+        staged.write_text(seeder.go_fuzz_v1(input_path.read_bytes(), kind=arg_kind))
         res = golane.replay_once(
             worktree, gen.pkg_dir, gen.fuzz_name, staged, mech, work_dir
         )
+        if res.error or res.timed_out:
+            raise Stopped(f"replay run failed: {res.error or 'timeout'}")
         stderr = res.stderr + res.stdout
         kind = stackhash.classify_kind("go", stderr, res.returncode)
         frames = stackhash.go_stack(stderr)
@@ -86,3 +96,4 @@ def run(args) -> int:
         return EXIT_OK if reproduced else EXIT_PARTIAL
     finally:
         gitops.worktree_remove(repo, worktree)
+        shutil.rmtree(work_dir, ignore_errors=True)

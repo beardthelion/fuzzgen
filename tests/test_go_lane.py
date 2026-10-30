@@ -40,7 +40,7 @@ def test_render_bytes(tmp_path):
     assert "Decode(data)" in src
 
 
-def test_gen_and_build_check_end_to_end(tmp_path, work_root):
+def test_gen_and_build_check_end_to_end(tmp_path, work_root, monkeypatch):
     """gen emits a compiling harness inside the contained build check."""
     repo = _go_repo(tmp_path)
     worktree, _ = __import__("fuzzgen.gitops", fromlist=["x"]).worktree_add_detached(
@@ -59,13 +59,13 @@ def test_gen_and_build_check_end_to_end(tmp_path, work_root):
     assert chk.status == "OK", chk.reason
 
 
-def test_cli_gen_writes_record(tmp_path, work_root):
+def test_cli_gen_writes_record(tmp_path, work_root, monkeypatch):
     repo = _go_repo(tmp_path)
     import fuzzgen.config as config
 
     # Point the default work root at the fixture-safe location by patching
     # config.work_root for this test process.
-    config.work_root = lambda **kw: work_root
+    monkeypatch.setattr(config, "work_root", lambda **kw: work_root)
     rc = cli.run(
         [
             "gen",

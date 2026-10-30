@@ -49,4 +49,6 @@ def parse_scope(path: Path) -> ScopeResult:
         b = _BARE.match(line)
         if b:
             res.targets.append(ScopeTarget(b.group("sel")))
+            continue
+        res.skipped.append(f"malformed: {line.strip()[:60]}")
     return res

@@ -45,10 +45,10 @@ def test_dedup_matrix():
 
 
 @pytest.mark.slow
-def test_planted_bug_found_within_60s(tmp_path, work_root):
+def test_planted_bug_found_within_60s(tmp_path, work_root, monkeypatch):
     """Spec test 4 (Go leg): planted OOB decoder found, deduped to one record."""
     repo = _planted_repo(tmp_path)
-    config.work_root = lambda **kw: work_root
+    monkeypatch.setattr(config, "work_root", lambda **kw: work_root)
     out = tmp_path / "out"
     start = time.monotonic()
     rc = cli.run(

@@ -34,7 +34,10 @@ def parse_selector(raw: str, lang_hint: str | None = None) -> Selector:
         return Selector(raw, "rust", parts[0], parts[-1])
     m = re.match(r"^(.+\.[ch]|.+\.[ch]pp|.*\.cc):([A-Za-z_][A-Za-z0-9_]*)$", raw)
     if m:
-        return Selector(raw, "c", m.group(1), m.group(2))
+        pkg = m.group(1)
+        if pkg.startswith("/") or ".." in pkg.split("/"):
+            raise ValueError(f"c selector path escapes the worktree: {pkg!r}")
+        return Selector(raw, "c", pkg, m.group(2))
     m2 = re.match(r"^(.+)\.([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$", raw)
     if m2:
         return Selector(raw, "go", m2.group(1), m2.group(3), recv=m2.group(2))
@@ -44,29 +47,62 @@ def parse_selector(raw: str, lang_hint: str | None = None) -> Selector:
     raise ValueError(f"unparseable selector {raw!r}")
 
 
+_GOLIST_ENV = {
+    "GOFLAGS": "-mod=readonly",
+    "GOPROXY": "off",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GOVCS": "-*",
+    "GONOSUMCHECK": "1",
+}
+
+
 def go_package_dir(repo: Path, import_path: str) -> Path:
-    """Resolve a go import path to a directory inside the worktree."""
+    """Resolve a go import path to a directory inside the worktree.
+
+    Offline, prompt-free resolution: a hostile go.mod/toolchain directive
+    must not trigger a network fetch or credential use at this stage.
+    """
+    import os
+
+    env = dict(_GOLIST_ENV)
+    env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    env["HOME"] = os.environ.get("HOME", "/")
     proc = run_bounded(
         ["go", "list", "-f", "{{.Dir}}", f"./{import_path}" if not import_path.startswith(".") else import_path],
-        cwd=repo,
-        timeout=60,
+        cwd=repo, timeout=60, env=env,
     )
     if proc.returncode != 0:
         proc = run_bounded(
-            ["go", "list", "-f", "{{.Dir}}", import_path], cwd=repo, timeout=60
+            ["go", "list", "-f", "{{.Dir}}", import_path], cwd=repo, timeout=60,
+            env=env,
         )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise FileNotFoundError(f"go list failed for {import_path}: {proc.stderr}")
-    return Path(proc.stdout.strip().splitlines()[-1])
+    resolved = Path(proc.stdout.strip().splitlines()[-1]).resolve()
+    root = repo.resolve()
+    import os as _os
+    if _os.path.commonpath([str(root), str(resolved)]) != str(root):
+        raise FileNotFoundError(
+            f"go list resolved {import_path} to {resolved} outside the worktree"
+        )
+    return resolved
 
 
 def rust_crate_dirs(repo: Path, crate: str) -> list[Path]:
-    """candidate crate dirs from cargo metadata; ambiguity handled by caller."""
+    """Candidate crate dirs from cargo metadata, confined to the worktree."""
+    import os
+
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/"),
+        "CARGO_NET_OFFLINE": "true",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
     proc = run_bounded(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
-        cwd=repo,
-        timeout=120,
+        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline"],
+        cwd=repo, timeout=120, env=env,
     )
+    root = repo.resolve()
     dirs: list[Path] = []
     if proc.returncode == 0 and proc.stdout.strip():
         try:
@@ -74,7 +110,9 @@ def rust_crate_dirs(repo: Path, crate: str) -> list[Path]:
             for pkg in meta.get("packages", []):
                 name = pkg.get("name", "").replace("-", "_")
                 if name == crate:
-                    dirs.append(Path(pkg["manifest_path"]).parent)
+                    d = Path(pkg["manifest_path"]).resolve().parent
+                    if os.path.commonpath([str(root), str(d)]) == str(root):
+                        dirs.append(d)
         except (json.JSONDecodeError, KeyError):
             pass
     if not dirs:

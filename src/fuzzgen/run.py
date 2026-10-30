@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -11,61 +13,72 @@ from . import config, contain, dedup, gitops, records, runner, seeder, stackhash
 from .cli import EXIT_OK, EXIT_PARTIAL, Stopped
 from .gen import prepare
 from .probe import probe_signature
+from .selectors import parse_selector
+
+MAX_REPLAYS = 256  # bound post-harvest replay work per run
 
 
-def _run_fields(sel, repo, sha, mechanism, denied, worktree, out_dir, run_id):
+def _run_fields(sel, repo, sha, mechanism, denied, worktree, out_dir, run_id,
+                probe_res, reach_by):
     return dict(
         target=sel.raw,
         lang=sel.lang,
-        mode=None,
+        mode=probe_res.mode,
         run_id=run_id,
         repo_path=str(repo),
         git_sha=sha,
         worktree_path=str(worktree),
-        toolchain={},
+        toolchain={"probe": probe_res.mode or "unknown"},
         containment=mechanism,
         networkDenied=denied,
-        repro=f"fuzzgen replay {out_dir}",
+        reach_by=reach_by or "unknown",
+        args=probe_res.args or [],
     )
 
 
 def run(args) -> int:
-    repo, sel, mechanism, denied, sha, worktree, out_root, warnings = prepare(args)
+    # Parse the selector before any worktree exists: a bad selector must
+    # not leak a marked worktree that refuses every later run.
+    try:
+        sel = parse_selector(args.target, getattr(args, "lang", None))
+    except ValueError as exc:
+        raise Stopped(str(exc))
+    repo, sel, mechanism, denied, sha, worktree, out_root, warnings = prepare(args, sel=sel)
     status = "OK"
     reason = None
     n_crashes = 0
     run_id = os.environ.get("FUZZGEN_RUN_ID") or f"run-{int(time.time())}"
     out_dir = records.out_dir_for(out_root, sel.lang, repo.name, sha, sel.raw)
     work_dir = Path(
-        __import__("tempfile").mkdtemp(
-            dir=config.work_root(mechanism=mechanism), prefix="run-"
-        )
+        tempfile.mkdtemp(dir=config.work_root(mechanism=mechanism), prefix="run-")
     )
     if mechanism == contain.MECH_NOBODY:
         work_dir.chmod(0o777)
     try:
         if sel.lang != "go":
-            raise Stopped(f"run for {sel.lang} lands with its lane (only go implemented)")
-        from .lanes import go as golane
-
-        probe_res = probe_signature(sel, worktree)
-        if probe_res.status != "OK":
-            status, reason = probe_res.status, probe_res.reason
+            status, reason = "NEEDS-HAND", f"run for {sel.lang} lands with its lane"
         else:
-            gen = golane.gen_harness(sel, probe_res, worktree)
-            if gen.status != "OK":
-                status, reason = gen.status, gen.reason
+            from .lanes import go as golane
+
+            probe_res = probe_signature(sel, worktree)
+            if probe_res.status != "OK":
+                status, reason = probe_res.status, probe_res.reason
             else:
-                fields = _run_fields(
-                    sel, repo, sha, mechanism, denied, worktree, out_dir, run_id
-                )
-                fields["mode"] = probe_res.mode
-                status, reason, n_crashes = _run_go(
-                    args, golane, sel, gen, worktree, work_dir, mechanism,
-                    out_dir, fields,
-                )
+                gen = golane.gen_harness(sel, probe_res, worktree)
+                if gen.status != "OK":
+                    status, reason = gen.status, gen.reason
+                else:
+                    fields = _run_fields(
+                        sel, repo, sha, mechanism, denied, worktree, out_dir,
+                        run_id, probe_res, getattr(args, "reach_by", None),
+                    )
+                    status, reason, n_crashes = _run_go(
+                        args, golane, sel, gen, worktree, work_dir, mechanism,
+                        out_dir, fields,
+                    )
     finally:
         gitops.worktree_remove(repo, worktree)
+        shutil.rmtree(work_dir, ignore_errors=True)
         for w in warnings:
             sys.stderr.write(f"fuzzgen: warning: {w}\n")
     row = records.target_row(sel.raw, status, lang=sel.lang,
@@ -75,7 +88,9 @@ def run(args) -> int:
         records.write_json(out_dir / "summary.json", doc)
         records.atomic_write(out_dir / "summary.md", records.summary_md(doc))
     except OSError as exc:
-        sys.stderr.write(f"fuzzgen: warning: summary write failed: {exc}\n")
+        sys.stderr.write(f"fuzzgen: error: summary write failed: {exc}\n")
+        # No canonical summary means no durable result; never report OK.
+        return EXIT_PARTIAL
     if reason:
         sys.stderr.write(f"fuzzgen: {sel.raw}: {status}: {reason}\n")
     return EXIT_OK if status == "OK" else EXIT_PARTIAL
@@ -88,9 +103,13 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
 
     seeds = seeder.collect_seeds(worktree, max_len=getattr(args, "max_len", None))
     seeder.merge_mode_seeds(seeds, fields.get("mode"))
-    seeder.write_corpus(seeds.seeds, out_dir / "corpus")
-    if fields.get("mode") in ("bytes",) and len(probe_args(fields)) <= 1:
-        seeder.write_go_testdata(seeds.seeds, pkg_dir, fuzz)
+    try:
+        seeder.write_corpus(seeds.seeds, out_dir / "corpus")
+        if fields.get("mode") == "bytes" and len(fields.get("args") or []) <= 1:
+            kind = "string" if (fields.get("args") or [""])[0] == "string" else "bytes"
+            seeder.write_go_testdata(seeds.seeds, pkg_dir, fuzz, kind=kind)
+    except OSError as exc:
+        return "DISK-CAP", f"corpus write failed: {exc}", 0
 
     # Provision only after all host-side writes: dirs created above would be
     # nobody-unwritable otherwise.
@@ -101,6 +120,7 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     deduper = dedup.Deduper()
     stage = work_dir / "stage"
     interrupted = False
+    replayed = 0
 
     while True:
         remaining = int(deadline - time.monotonic())
@@ -110,35 +130,52 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
         res = golane.fuzz_round(
             worktree, pkg_dir, fuzz, remaining, mechanism, work_dir,
             race=getattr(args, "race", False),
+            jobs=getattr(args, "jobs", 1) or 1,
+            rss_limit_mb=getattr(args, "rss_limit_mb", None),
         )
         crashers = golane.harvest_crashers(pkg_dir, fuzz, stage, before=before)
-        golane.harvest_gocache(work_dir, fuzz, out_dir / "corpus")
-        if res.timed_out:
-            interrupted = True
-            break
+        try:
+            golane.harvest_gocache(work_dir, fuzz, out_dir / "corpus")
+        except OSError as exc:
+            return "DISK-CAP", f"corpus sweep failed: {exc}", len(deduper.records)
+        # A nonzero exit is expected when the engine found a crasher; a
+        # nonzero exit with no crasher is a failed run, not a clean one.
+        if res.error or (res.returncode not in (0, 1) and not crashers):
+            reason = res.error or (res.stderr or res.stdout or "fuzz round failed")[-400:]
+            return "RUN-FAIL", reason, len(deduper.records)
+        if res.returncode != 0 and not crashers and not res.timed_out:
+            reason = (res.stderr or res.stdout or "fuzz round failed")[-400:]
+            return "RUN-FAIL", reason, 0
         for c in crashers:
+            if replayed >= MAX_REPLAYS or time.monotonic() > deadline + 120:
+                break
+            replayed += 1
             data = golane.crasher_input(c)
             rep = golane.replay_once(
                 worktree, pkg_dir, fuzz, c, mechanism, work_dir
             )
+            if rep.error or rep.timed_out:
+                continue  # replay infra failure: no evidence, no record
             stderr = rep.stderr + rep.stdout
             kind = stackhash.classify_kind("go", stderr, rep.returncode)
             frames = stackhash.go_stack(stderr)
             verified = bool(frames) or "panic" in stderr or "fatal error" in stderr
             if not verified:
                 continue  # engine artifacts that do not reproduce are not crashes
-            shash = stackhash.stack_hash(kind, frames)
+            shash = stackhash.stack_hash(kind, frames, stderr)
             rec = deduper.add(kind, shash, data, stderr)
             rec.repro_verified = True
+        if res.timed_out:
+            interrupted = True
+            break
         if not crashers:
             break  # engine finished its box without new crashers
 
-    for rec in deduper.records.values():
-        dedup.write_crash_record(out_dir, rec, fields)
+    try:
+        for rec in deduper.records.values():
+            dedup.write_crash_record(out_dir, rec, fields)
+    except OSError as exc:
+        return "DISK-CAP", f"record write failed: {exc}", len(deduper.records)
 
     status = "INTERRUPTED" if interrupted else "OK"
     return status, None, len(deduper.records)
-
-
-def probe_args(fields: dict) -> list:
-    return fields.get("args") or []
