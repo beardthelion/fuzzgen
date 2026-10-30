@@ -107,7 +107,7 @@ def _finding_for(rec: dict, record_dir: Path, repo: Path) -> dict:
     feature = rec.get("feature_id") or f"fuzzgen-{sel_slug[:40]}"
     return {
         "schemaVersion": SCHEMA_VERSION,
-        "findingId": f"fnd_fuzzgen_{sel_slug}_{shash[:8]}",
+        "findingId": f"fnd_fuzzgen_{sel_slug}_{shash[:16]}",
         "featureId": feature,
         "title": f"{kind} {shash[:8]} at {selector}",
         "category": "fuzz",

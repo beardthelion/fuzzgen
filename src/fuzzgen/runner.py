@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,30 +63,64 @@ def run_bounded(
         res.error = str(exc)
         return res
 
+    # Bounded capture: pump threads keep at most capture_limit bytes in
+    # memory while still draining the pipe (a chatty child never blocks
+    # on a full buffer, and never exhausts host memory).
+    out_buf, err_buf = bytearray(), bytearray()
+    pump_t = threading.Thread(target=_drain, args=(proc.stdout, out_buf, capture_limit), daemon=True)
+    pump_e = threading.Thread(target=_drain, args=(proc.stderr, err_buf, capture_limit), daemon=True)
+    pump_t.start()
+    pump_e.start()
+    if input_bytes is not None:
+        try:
+            proc.stdin.write(input_bytes)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
     try:
-        out, err = proc.communicate(input=input_bytes, timeout=timeout)
+        proc.wait(timeout=timeout)
         res.returncode = proc.returncode
     except subprocess.TimeoutExpired:
         res.timed_out = True
         _kill_tree(proc)
         try:
-            # A setsid'd grandchild can hold the pipes; bound the drain.
-            out, err = proc.communicate(timeout=DRAIN_TIMEOUT)
+            proc.wait(timeout=DRAIN_TIMEOUT)
         except subprocess.TimeoutExpired:
-            res.error = "child escaped kill; output pipes never drained"
+            res.error = "child escaped kill"
             for stream in (proc.stdout, proc.stderr):
                 try:
                     if stream:
                         stream.close()
                 except OSError:
                     pass
-            out = proc.stdout.read() if proc.stdout and not proc.stdout.closed else b""
-            err = proc.stderr.read() if proc.stderr and not proc.stderr.closed else b""
+    pump_t.join(timeout=DRAIN_TIMEOUT)
+    pump_e.join(timeout=DRAIN_TIMEOUT)
+    out, err = bytes(out_buf), bytes(err_buf)
 
     res.duration_s = time.monotonic() - start
-    res.stdout = bound_text((out or b"")[:capture_limit].decode("utf-8", errors="replace"))
-    res.stderr = bound_text((err or b"")[:capture_limit].decode("utf-8", errors="replace"))
+    res.stdout = bound_text(out.decode("utf-8", errors="replace"))
+    res.stderr = bound_text(err.decode("utf-8", errors="replace"))
     return res
+
+
+def _drain(stream, buf: bytearray, limit: int) -> None:
+    """Drain the stream; keep at most `limit` bytes, discard the rest."""
+    if stream is None:
+        return
+    try:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            if len(buf) < limit:
+                buf += chunk[: limit - len(buf)]
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:

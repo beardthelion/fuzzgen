@@ -177,5 +177,48 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     except OSError as exc:
         return "DISK-CAP", f"record write failed: {exc}", len(deduper.records)
 
+    _resource_records(args, golane, pkg_dir, fuzz, worktree, work_dir,
+                      mechanism, out_dir, fields, deduper.records)
+
     status = "INTERRUPTED" if interrupted else "OK"
     return status, None, len(deduper.records)
+
+
+RESOURCE_KINDS = {
+    "out-of-memory", "allocation-size-too-big", "capacity-overflow",
+    "timeout", "slow-unit",
+}
+
+
+def _resource_records(args, golane, pkg_dir, fuzz, worktree, work_dir,
+                      mechanism, out_dir, fields, recs) -> None:
+    """Measured replays for resource-class deaths -> resource/<id>/ records."""
+    from . import resource as _res
+
+    for i, (shash, rec) in enumerate(sorted(recs.items())):
+        if rec.kind not in RESOURCE_KINDS or not rec.min_input:
+            continue
+        tdir = pkg_dir / "testdata" / "fuzz" / fuzz
+        tdir.mkdir(parents=True, exist_ok=True)
+        staged = tdir / f"resource-{shash}"
+        arg_kind = "string" if (fields.get("args") or [""])[0] == "string" else "bytes"
+        staged.write_text(seeder.go_fuzz_v1(rec.min_input, kind=arg_kind))
+        rel = f"./{pkg_dir.relative_to(worktree)}"
+        cmd = ["go", "test", "-run", f"^{fuzz}$", "-count", "1", rel]
+        mem = getattr(args, "rss_limit_mb", None)
+        env = {"GOMEMLIMIT": f"{mem}MiB"} if mem else {}
+        argv = contain.contained_argv(
+            mechanism, cmd, worktree, work_dir,
+            env=golane._go_env(work_dir, env),
+            rlimits=contain.default_rlimits(mem_mb=mem),
+        )
+        measure = _res.measure_replay(argv, cwd=worktree, env=None, mem_max_mb=mem)
+        staged.unlink(missing_ok=True)
+        fields_r = dict(fields, kind=rec.kind)
+        try:
+            _res.write_resource_record(
+                out_dir, f"oom-{i}", fields_r, measure,
+                fields.get("reach_by"), rec.min_input,
+            )
+        except OSError:
+            pass
