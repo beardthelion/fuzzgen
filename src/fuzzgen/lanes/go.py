@@ -131,6 +131,14 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> GenRes
     return GenResult("OK", harness_path=harness, fuzz_name=fuzz, pkg_dir=pkg_dir)
 
 
+def provision_for_rung(mechanism: str, *paths: Path) -> None:
+    """nobody rung cannot write user-owned trees; provision before contained runs."""
+    if mechanism == contain.MECH_NOBODY:
+        for p in paths:
+            if Path(p).exists():
+                provision_writable(Path(p))
+
+
 def build_check(
     worktree: Path,
     pkg_dir: Path,
@@ -139,9 +147,7 @@ def build_check(
     extra_env: dict | None = None,
 ) -> GenResult:
     """Compile the package with tests under the containment rung."""
-    if mechanism == contain.MECH_NOBODY:
-        provision_writable(worktree)
-        provision_writable(work_dir)
+    provision_for_rung(mechanism, worktree, work_dir)
     rel = pkg_dir.relative_to(worktree) if str(pkg_dir).startswith(str(worktree)) else Path(".")
     go_cmd = ["go", "test", "-run", "^$", "-count", "0", f"./{rel}" if str(rel) != "." else "./..."]
     env = {"GOCACHE": str(work_dir / "gocache"), "GOPATH": str(work_dir / "gopath"),
@@ -153,3 +159,118 @@ def build_check(
     if res.returncode != 0:
         return GenResult("BUILD-FAIL", reason=res.stderr or res.stdout)
     return GenResult("OK")
+
+
+def _go_env(work_dir: Path, extra: dict | None = None) -> dict:
+    env = {
+        "GOCACHE": str(work_dir / "gocache"),
+        "GOPATH": str(work_dir / "gopath"),
+        "HOME": str(work_dir),
+    }
+    env.update(extra or {})
+    return env
+
+
+def fuzz_round(
+    worktree: Path,
+    pkg_dir: Path,
+    fuzz: str,
+    seconds: int,
+    mechanism: str,
+    work_dir: Path,
+    race: bool = False,
+) -> "runner.Result":
+    """One go test -fuzz round under the containment rung."""
+    rel = f"./{pkg_dir.relative_to(worktree)}"
+    cmd = ["go", "test", "-run", "^$", "-fuzz", f"^{fuzz}$",
+           "-fuzztime", f"{seconds}s", "-count", "1", rel]
+    if race:
+        cmd += ["-race"]
+    argv = contain.contained_argv(
+        mechanism, cmd, worktree, work_dir, env=_go_env(work_dir)
+    )
+    return runner.run_bounded(argv, timeout=seconds + 120, cwd=worktree)
+
+
+def testdata_files(pkg_dir: Path, fuzz: str) -> set[Path]:
+    src = pkg_dir / "testdata" / "fuzz" / fuzz
+    if not src.is_dir():
+        return set()
+    return {p for p in src.iterdir() if p.is_file()}
+
+
+def harvest_crashers(pkg_dir: Path, fuzz: str, stage: Path, before: set[Path] | None = None) -> list[Path]:
+    """Relocate crashers added since ``before``; seeds and stale files stay.
+
+    Our own write_go_testdata seeds live in the same dir, so only files
+    the fuzzer wrote during the round count as crashers.
+    """
+    src = pkg_dir / "testdata" / "fuzz" / fuzz
+    if not src.is_dir():
+        return []
+    stage.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for p in sorted(src.iterdir()):
+        if not p.is_file() or p.name == "README" or (before and p in before):
+            continue
+        dst = stage / p.name
+        dst.write_bytes(p.read_bytes())
+        p.unlink()
+        moved.append(dst)
+    return moved
+
+
+def harvest_gocache(work_dir: Path, fuzz: str, corpus_out: Path) -> int:
+    """Sweep the interesting-corpus cache under GOCACHE/fuzz into corpus_out."""
+    import shutil
+
+    gocache = work_dir / "gocache" / "fuzz"
+    n = 0
+    if not gocache.is_dir():
+        return 0
+    corpus_out.mkdir(parents=True, exist_ok=True)
+    for p in gocache.rglob("*"):
+        if p.is_file():
+            shutil.copy(p, corpus_out / p.name)
+            n += 1
+    return n
+
+
+def replay_once(
+    worktree: Path,
+    pkg_dir: Path,
+    fuzz: str,
+    crash_file: Path,
+    mechanism: str,
+    work_dir: Path,
+) -> "runner.Result":
+    """Replay one input in a fresh contained process for a clean stack."""
+    tdir = pkg_dir / "testdata" / "fuzz" / fuzz
+    tdir.mkdir(parents=True, exist_ok=True)
+    staged = tdir / crash_file.name
+    staged.write_bytes(crash_file.read_bytes())
+    rel = f"./{pkg_dir.relative_to(worktree)}"
+    cmd = ["go", "test", "-run", f"^{fuzz}$", "-count", "1", rel]
+    argv = contain.contained_argv(
+        mechanism, cmd, worktree, work_dir, env=_go_env(work_dir)
+    )
+    res = runner.run_bounded(argv, timeout=300, cwd=worktree)
+    staged.unlink(missing_ok=True)
+    return res
+
+
+def crasher_input(crash_file: Path) -> bytes:
+    """Extract the raw input bytes from a go test fuzz v1 crasher file."""
+    import re
+
+    text = crash_file.read_text(errors="replace")
+    m = re.search(r'\[\]byte\("((?:[^"\\]|\\.)*)"\)', text)
+    if m:
+        return m.group(1).encode().decode("unicode_escape").encode("latin-1")
+    m = re.search(r'string\("((?:[^"\\]|\\.)*)"\)', text)
+    if m:
+        return m.group(1).encode().decode("unicode_escape").encode("latin-1")
+    m = re.search(r"int\((-?\d+)\)", text)
+    if m:
+        return m.group(1).encode()
+    return crash_file.read_bytes()

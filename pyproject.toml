@@ -29,3 +29,6 @@ packages = ["src/fuzzgen"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["dist", "build", "docs", "fuzzgen-out", "fuzzgen-work", "bin"]
+markers = [
+    "slow: tests that fuzz for tens of seconds",
+]
