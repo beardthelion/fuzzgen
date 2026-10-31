@@ -240,7 +240,10 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     if res.error or res.timed_out:
         return "RUN-FAIL", res.error or "build timeout", 0, 0
     if res.returncode != 0:
-        return "BUILD-FAIL", (res.stderr or res.stdout)[-400:], 0, 0
+        # Head carries the actual compile error; the tail is cargo noise.
+        err = res.stderr or res.stdout
+        reason = err[:300] if len(err) <= 700 else f"{err[:300]}\n...\n{err[-400:]}"
+        return "BUILD-FAIL", reason, 0, 0
     seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
     corpus = out_dir / "corpus"
     corpus.mkdir(parents=True, exist_ok=True)

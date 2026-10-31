@@ -115,3 +115,34 @@ def test_rust_manifest_append_preserves_existing(tmp_path):
     assert existing.rstrip() in text
     assert 'name = "old_target"' in text
     assert 'name = "fuzzgen_decode"' in text
+
+
+def test_rust_lane_bwrap_rung(tmp_path):
+    """Forced bwrap rung for the rust lane: argv shape + real exec."""
+    import shutil
+    import subprocess
+    import pytest
+    from fuzzgen import contain
+
+    if not shutil.which("bwrap") or not shutil.which("cargo"):
+        pytest.skip("bwrap or cargo absent")
+    probe = subprocess.run(
+        ["bwrap", "--unshare-all", "--ro-bind", "/", "/", "true"],
+        capture_output=True, timeout=20,
+    )
+    if probe.returncode != 0:
+        pytest.skip("bwrap namespaces unavailable on this kernel")
+    crate = tmp_path / "crate"
+    (crate / "fuzz").mkdir(parents=True)
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    argv = contain.contained_argv(
+        contain.MECH_BWRAP, ["cargo", "--version"], crate, wd,
+        env=rustlane._cargo_env(wd),
+        chdir=str(crate / "fuzz"),
+    )
+    assert "--chdir" in argv
+    assert argv[argv.index("--chdir") + 1] == str(crate / "fuzz")
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "cargo" in proc.stdout

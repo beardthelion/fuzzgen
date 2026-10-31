@@ -138,6 +138,7 @@ def contained_argv(
     cpus: str = "2.0",
     pids: int = 512,
     rlimits: dict[str, str] | None = None,
+    chdir: str | None = None,
 ) -> list[str]:
     """Wrap cmd for the rung. env is pre-scrubbed by the caller."""
     env = scrub_env(env)
@@ -149,7 +150,7 @@ def contained_argv(
         argv = ["docker", "run", "--rm", "--network", "none",
                 "--memory", memory, "--cpus", cpus,
                 "--pids-limit", str(pids), "--cap-drop", "ALL",
-                "-v", f"{wt}:{wt}", "-v", f"{wd}:{wd}", "-w", wt]
+                "-v", f"{wt}:{wt}", "-v", f"{wd}:{wd}", "-w", chdir or wt]
         for src, dst in mounts:
             argv += ["-v", f"{src}:{dst}:ro"]
         for k, v in sorted(env.items()):
@@ -172,6 +173,8 @@ def contained_argv(
                  "--setenv", "PATH", _toolchain_path()]
         for src, dst in mounts:
             argv += ["--ro-bind", str(src), str(dst)]
+        if chdir:
+            argv += ["--chdir", chdir]
         return argv + env_args + ["--", *cmd]
 
     if mechanism == MECH_UNSHARE:

@@ -73,7 +73,12 @@ line in `beacon_chain/utils/ssz/src/decode.rs`:
 
 The 2018 workspace manifest is unparseable by modern cargo, so the leg
 ran against a standalone checkout of the real `ssz` crate at `561167fa1^`
-(same source, minimal manifest), harness `decode_length(data, 1, 4)`.
+(same source, minimal manifest). The pasted result used a hand-written
+harness, `decode_length(data, 1, 4)`: generated harnesses are single-arg
+only, and 3-arg selectors correctly resolve to NEEDS-HAND. The gate test
+`tests/test_historic.py` automates exactly this leg (fetch by sha, pre-fix
+checkout, hand harness, lane records) behind `FUZZGEN_GATE_LIVE=1` and
+passes in ~30s.
 
 **Pre-fix (561167fa1^), rediscovered in seconds:**
 
@@ -97,17 +102,21 @@ Done 17335006 runs in 61 second(s)
 17.3M runs, no crash. The bug was rediscovered at its pre-fix commit
 and confirmed absent after the fix.
 
-## Lane status on this machine
+## Lane status per rung
 
-- go: validated end-to-end (probe, harness, contained fuzz, dedup,
-  records, promote shape) on gjson and the planted-bug fixture.
-- rust: validated end-to-end on httparse via `fuzzgen run` (19.57M
-  execs, cargo-fuzz under the nobody rung with a staged toolchain).
-- c: generator + build + run_argv wired; `unvalidated` because clang is
-  absent on this machine. The lane test exercises clane.gen_harness,
-  clane.build, and clane.run_argv when clang exists.
-- bwrap rung: code correct (proc/dev/tmpfs + resolved toolchain PATH);
-  unverifiable on this host since the kernel disables unprivileged user
-  namespaces. On hosts with userns it is selected and works; the
-  forced-rung test proves `go version` executes inside it there and
-  skips here.
+- nobody (bounded-not-contained), this machine's rung: go validated
+  end-to-end (gjson 3.57M execs, planted-bug rediscovery); rust
+  validated end-to-end (httparse 19.06-19.57M execs under
+  `fuzzgen run`, toolchain staged into the work dir).
+- bwrap: selected and exercised where unprivileged user namespaces
+  exist. On this kernel userns is disabled, so the forced-rung tests
+  (go `go version`, rust `cargo --version`, --chdir argv shape) verify
+  argv correctness and skip the exec on this host; on a userns host
+  both execute.
+- docker/sudo-docker: image-gated, unexercised here (no toolchain
+  image present).
+- c lane: `unvalidated` on this machine (no clang); the lane test runs
+  clane.gen_harness + clane.build + clane.run_argv wherever clang
+  exists.
+- mech none: argv only; `--no-containment` stays gated behind
+  `FUZZGEN_ALLOW_NO_CONTAINMENT=1`.

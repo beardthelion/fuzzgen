@@ -159,11 +159,12 @@ def _cargo_env(work_dir: Path, extra: dict | None = None) -> dict:
 
 
 def fetch_deps(crate: Path, work_dir: Path) -> bool:
-    """Host-side prefetch so contained builds run with no network."""
+    """Host-side prefetch into the bound CARGO_HOME so contained builds
+    resolve the registry with no network."""
     import os
 
     env = dict(os.environ, CARGO_TARGET_DIR=str(work_dir / "cargo-target"),
-               CARGO_HOME=os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
+               CARGO_HOME=str(work_dir / "cargo-home"))
     res = runner.run_bounded(["cargo", "+nightly", "fetch"], cwd=crate / "fuzz",
                              timeout=600, env=env)
     return res.returncode == 0
@@ -178,11 +179,14 @@ def _asan_rlimits() -> dict:
 
 def build(crate: Path, name: str, mechanism: str, work_dir: Path,
           tc_env: dict | None = None) -> "runner.Result":
+    # The whole crate binds as the worktree so `path = ".."` deps resolve
+    # on every rung; the rung chdir's into fuzz/ where the manifest lives.
     argv = contain.contained_argv(
         mechanism,
         ["cargo", "+nightly", "fuzz", "build", "-s", "address", name],
-        crate / "fuzz", work_dir, env=_cargo_env(work_dir, tc_env),
+        crate, work_dir, env=_cargo_env(work_dir, tc_env),
         rlimits=_asan_rlimits(),
+        chdir=str(crate / "fuzz"),
     )
     return runner.run_bounded(argv, timeout=1800, cwd=crate / "fuzz")
 
@@ -197,8 +201,9 @@ def fuzz_round(crate: Path, name: str, corpus: Path, stage: Path, seconds: int,
            f"-fork={jobs}", "-ignore_crashes=1", "-ignore_ooms=1",
            "-ignore_timeouts=1", "-rss_limit_mb=0"]
     argv = contain.contained_argv(
-        mechanism, cmd, crate / "fuzz", work_dir, env=_cargo_env(work_dir, tc_env),
+        mechanism, cmd, crate, work_dir, env=_cargo_env(work_dir, tc_env),
         rlimits={**_asan_rlimits(), "cpu": str(seconds + 300)},
+        chdir=str(crate / "fuzz"),
     )
     return runner.run_bounded(argv, timeout=seconds + 300, cwd=crate / "fuzz")
 
