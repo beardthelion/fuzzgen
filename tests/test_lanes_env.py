@@ -326,7 +326,7 @@ def test_rust_generic_recv_turbofish(tmp_path):
     res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
                                                 args=["&[u8]"]), tmp_path)
     assert res.status == "OK"
-    assert "Key::<Inner>::from_bytes(data)" in res.target_path.read_text()
+    assert "Key::<krate::Inner>::from_bytes(data)" in res.target_path.read_text()
 
 
 def test_go_method_receiver_decl(tmp_path):
@@ -358,3 +358,91 @@ def test_go_fuzz_passes_timeout_flag():
         runner.run_bounded = orig
     assert "-timeout" in captured["argv"]
     assert "0s" in captured["argv"]
+
+
+def test_count_execs_cumulative_go_lines():
+    from fuzzgen.run import _count_execs
+    text = ("fuzz: elapsed: 1s, execs: 10\n"
+            "fuzz: elapsed: 2s, execs: 20\n"
+            "fuzz: elapsed: 3s, execs: 30\n")
+    assert _count_execs(text) == 30
+
+
+def _bwrap_or_skip():
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which("bwrap") or not shutil.which("cargo"):
+        pytest.skip("bwrap or cargo absent")
+    probe = subprocess.run(
+        ["bwrap", "--unshare-all", "--ro-bind", "/", "/", "true"],
+        capture_output=True, timeout=20,
+    )
+    if probe.returncode != 0:
+        pytest.skip("bwrap namespaces unavailable on this kernel")
+
+
+def test_rust_assoc_fn_builds_under_bwrap(tmp_path):
+    """The emitted PeerId::from_bytes call compiles+runs under bwrap."""
+    _bwrap_or_skip()
+    from fuzzgen import contain
+    crate = tmp_path / "krate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "krate"\nversion = "0.1.0"\nedition = "2021"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "pub struct PeerId(u64);\n"
+        "impl PeerId { pub fn from_bytes(d: &[u8]) -> Self { "
+        "PeerId(d.iter().fold(0u64, |a, b| a.wrapping_add(*b as u64))) } }\n")
+    sel = parse_selector("krate::PeerId::from_bytes", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
+                                                args=["&[u8]"]), tmp_path)
+    assert res.status == "OK"
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    tc_env = rustlane.stage_rust_toolchain(wd)
+    assert rustlane.fetch_deps(crate, wd)
+    res = rustlane.build(crate, crate, "fuzzgen_from_bytes",
+                         contain.MECH_BWRAP, wd, tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    stage = tmp_path / "stage"
+    res = rustlane.fuzz_round(crate, crate, "fuzzgen_from_bytes",
+                              corpus, stage, 8, contain.MECH_BWRAP, wd,
+                              tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+
+
+def test_rust_generic_recv_builds_under_bwrap(tmp_path):
+    """Key::<Inner>::from_bytes builds+runs under bwrap."""
+    _bwrap_or_skip()
+    from fuzzgen import contain
+    crate = tmp_path / "krate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "krate"\nversion = "0.1.0"\nedition = "2021"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "pub struct Inner;\n"
+        "pub struct Key<K> { _k: std::marker::PhantomData<K> }\n"
+        "impl Key<Inner> { pub fn from_bytes(d: &[u8]) -> Self "
+        "{ Key { _k: std::marker::PhantomData } } }\n")
+    sel = parse_selector("krate::Key::from_bytes", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
+                                                args=["&[u8]"]), tmp_path)
+    assert res.status == "OK"
+    assert "Key::<krate::Inner>::from_bytes(data)" in res.target_path.read_text()
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    tc_env = rustlane.stage_rust_toolchain(wd)
+    assert rustlane.fetch_deps(crate, wd)
+    res = rustlane.build(crate, crate, "fuzzgen_from_bytes",
+                         contain.MECH_BWRAP, wd, tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    stage = tmp_path / "stage"
+    res = rustlane.fuzz_round(crate, crate, "fuzzgen_from_bytes",
+                              corpus, stage, 8, contain.MECH_BWRAP, wd,
+                              tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]

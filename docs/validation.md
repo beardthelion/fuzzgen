@@ -122,40 +122,47 @@ INFO: exiting: 0 time: 20s
 `fuzzgen run --repo malachite --lang rust --seconds 15
 informalsystems-malachitebft-peer::PeerId::from_bytes` -> generated
 `PeerId::from_bytes(data)` with no hand edits, `{"status":"OK",
-"execs":3690491,"crashes":0}`, cov:152 ft:198 corp:46. The generic
-receiver leg `PublicKey::from_sec1_bytes` correctly lands NEEDS-HAND:
-three in-crate `CurveConfig` impls (K256/P256/P384) and no default
-type param means no unambiguous turbofish; notes carry
-"generic receiver PublicKey: no single concrete impl or default type
-params resolvable" instead of an E0283 BUILD-FAIL.
+"execs":3690491,"crashes":0}`, cov:152 ft:198 corp:46. The generic receiver leg `PublicKey::from_sec1_bytes` resolves
+via the declared bound trait: `curve` re-exports three
+`CurveConfig` impls, the sorted-first pick emits
+`PublicKey::<informalsystems_malachitebft_signing_ecdsa::K256Config>::from_sec1_bytes`
+-> `{"status":"OK","execs":1886304}` with notes
+"receiver resolved to K256Config via bound trait".
 
 ### gitlab-runner (Go, method receiver, bwrap)
 
 `fuzzgen run --repo gitlab-runner --lang go --seconds 15
 gitlab.com/gitlab-org/gitlab-runner/common/spec.Inputs.UnmarshalJSON`
 -> generated `var v Inputs; v.UnmarshalJSON(data)` with no hand
-edits, `{"status":"OK","execs":102340,"crashes":0}` under bwrap.
+edits, `{"status":"OK","execs":41403,"crashes":0}` under bwrap.
+Unedited last 6 lines of fuzz_stderr.txt:
+
+```
+fuzz: elapsed: 9s, execs: 21729 (3267/sec), new interesting: 68 (total: 69)
+fuzz: elapsed: 12s, execs: 27562 (1944/sec), new interesting: 73 (total: 74)
+fuzz: elapsed: 14s, execs: 41403 (6731/sec), new interesting: 83 (total: 84)
+PASS
+ok  	gitlab.com/gitlab-org/gitlab-runner/common/spec	14.113s
+```
 
 ### gjson 15m leg (Go -timeout fix)
 
 `fuzzgen run --repo gjson --lang go --seconds 900
-github.com/tidwall/gjson.Parse` under bwrap -> `{"status":"OK",
-"execs":1305563523}`: go test's default 10m -timeout would have
-killed the run; with `-timeout 0s` it ran the full 15m and exited
-cleanly. An 11m leg captured the raw tail; last lines of
-fuzz_stderr.txt (rung line is line 1 of the file):
+github.com/tidwall/gjson.Parse` under bwrap -> `{"status":"OK"}`:
+go test's default 10m -timeout would have killed the run; with
+`-timeout 0s` it ran the full 15m and exited cleanly. The recorded
+exec figure for that run predates the cumulative-line recount fix
+and was inflated; a 30s recount leg shows `{"execs":673746}` which
+equals the last `execs:` line in its fuzz_stderr.txt exactly. The
+11m leg's tail (last line `execs: 13970625`, a real round count):
 
 ```
-fuzz: elapsed: 10m51s, execs: 13803089 (20719/sec), new interesting: 166 (total: 167)
 fuzz: elapsed: 10m54s, execs: 13864920 (20613/sec), new interesting: 166 (total: 167)
 fuzz: elapsed: 10m57s, execs: 13928167 (21079/sec), new interesting: 166 (total: 167)
 fuzz: elapsed: 10m59s, execs: 13970625 (20308/sec), new interesting: 166 (total: 167)
 PASS
-ok  	gitlab.com/tidwall/gjson	659.107s
+ok  	github.com/tidwall/gjson	659.107s
 ```
-
-`ok ... 659.107s` means the round ran past the 10m mark and exited
-cleanly at the fuzztime bound, 1.06B execs.
 
 ### Historic crash leg (lighthouse ssz, commit 561167fa1)
 

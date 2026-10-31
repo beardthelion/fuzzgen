@@ -73,13 +73,15 @@ def _is_workspace_member(crate: Path) -> bool:
         return False
 
 
-def _concrete_recv(crate: Path, recv: str) -> str | None:
-    """Turbofish args for generic recv types: single in-crate concrete
-    impl wins, then type-param defaults; None when unresolvable."""
+def _concrete_recv(crate: Path, recv: str) -> tuple[str | None, str]:
+    """Turbofish args for generic recv types and a note naming the pick:
+    concrete {recv}<T> impls (sorted first), then impls of the declared
+    bound trait (sorted first), then type-param defaults; None when
+    unresolvable."""
     import re
 
     impl_args: set[str] = set()
-    params: set[str] = set()
+    params: dict[str, str] = {}  # param name -> bound trait
     defaults: str | None = None
     for f in sorted((crate / "src").rglob("*.rs")):
         try:
@@ -90,9 +92,10 @@ def _concrete_recv(crate: Path, recv: str) -> str | None:
             rf"(?:struct|enum|type)\s+{re.escape(recv)}\s*<([^>]*)>", text
         ):
             decl = m.group(1)
-            params |= set(re.findall(r"([A-Za-z_]\w*)\s*[:=,]", decl))
-            params |= set(re.findall(r",\s*([A-Za-z_]\w*)\s*[:=]", "," + decl))
-            params |= set(re.findall(r"^([A-Za-z_]\w*)\s*[,>]", decl))
+            for pm in re.finditer(r"([A-Za-z_]\w*)\s*:\s*([\w:]+)", decl):
+                params[pm.group(1)] = pm.group(2).split("+")[0].strip()
+            for pm in re.finditer(r"(?:^|,)\s*([A-Za-z_]\w*)\s*[,>]", decl):
+                params.setdefault(pm.group(1), "")
             ds = re.findall(r"\w+\s*=\s*([\w:]+)", decl)
             if len(ds) == decl.count(",") + 1:
                 defaults = "<" + ", ".join(ds) + ">"
@@ -100,13 +103,57 @@ def _concrete_recv(crate: Path, recv: str) -> str | None:
             rf"(?:impl|::|=)\s*{re.escape(recv)}\s*<\s*([^<>]+)\s*>", text
         ):
             impl_args.add(m.group(1).strip())
-    # Generic param names (the decl's own <C>) are not concrete impls.
-    concrete = {a for a in impl_args if a not in params}
-    if defaults and not concrete:
-        return defaults
-    if len(concrete) == 1:
-        return "<" + next(iter(concrete)) + ">"
-    return None
+    concrete = sorted(a for a in impl_args if a not in params)
+    if concrete:
+        return "<" + concrete[0] + ">", f"receiver resolved to {concrete[0]}"
+    # No concrete impls: resolve via the declared bound trait's impls.
+    bound_impls: set[str] = set()
+    for bound in params.values():
+        if not bound:
+            continue
+        for f in sorted((crate / "src").rglob("*.rs")):
+            try:
+                text = f.read_text(errors="replace")
+            except OSError:
+                continue
+            for m in re.finditer(
+                rf"impl(?:<[^>]*>)?\s+{re.escape(bound)}\s+for\s+([\w:]+)", text
+            ):
+                bound_impls.add(m.group(1))
+    if bound_impls:
+        pick = sorted(bound_impls)[0]
+        return "<" + pick + ">", f"receiver resolved to {pick} via bound trait"
+    if defaults:
+        return defaults, f"receiver resolved to default params {defaults}"
+    return None, ""
+
+
+def _qualify_type(crate: Path, ident: str) -> str:
+    """Crate-relative path for a bare type name: lib.rs pub use wins,
+    else the file-derived module path."""
+    import re
+
+    if "::" in ident:
+        return ident
+    lib_rs = crate / "src" / "lib.rs"
+    if lib_rs.is_file():
+        text = lib_rs.read_text(errors="replace")
+        if re.search(rf"pub\s+use\s+\w+(?:::\w+)*::\*?\b{re.escape(ident)}\b",
+                     text) or re.search(
+                     rf"pub\s+use\s+\w+(?:::\w+)*::\*\s*;", text):
+            return ident
+    for f in sorted((crate / "src").rglob("*.rs")):
+        try:
+            if re.search(
+                rf"(?:pub\s+)?(?:struct|enum|type)\s+{re.escape(ident)}\b",
+                f.read_text(errors="replace"),
+            ):
+                mod = f.relative_to(crate / "src").with_suffix("")
+                parts = [p for p in mod.parts if p not in ("lib", "mod")]
+                return "::".join(parts + [ident]) if parts else ident
+        except OSError:
+            continue
+    return ident
 
 
 def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGenResult:
@@ -126,21 +173,29 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGe
         recv_path = sel.recv
         # Generic receiver: emit Type::<T>::fn or NEEDS-HAND when the
         # concrete type cannot be resolved (E0283 otherwise).
-        conc = _concrete_recv(crate, sel.recv)
+        conc, recv_note = _concrete_recv(crate, sel.recv)
         if conc is None:
             import re
-            if re.search(rf"{re.escape(sel.recv)}\s*<",
-                         (crate / "src").read_text(errors="replace")
-                         if (crate / "src").is_file() else "") or                any(re.search(rf"{re.escape(sel.recv)}\s*<",
-                             f.read_text(errors="replace"))
-                   for f in (crate / "src").rglob("*.rs")):
+            generic = any(
+                re.search(rf"{re.escape(sel.recv)}\s*<",
+                          f.read_text(errors="replace"))
+                for f in (crate / "src").rglob("*.rs")
+            )
+            if generic:
                 return RustGenResult(
                     "NEEDS-HAND",
-                    reason=f"generic receiver {sel.recv}: no single concrete "
-                           "impl or default type params resolvable",
+                    reason=f"generic receiver {sel.recv}: no concrete impl, "
+                           "bound-trait impl, or default type params resolvable",
                 )
         else:
-            recv_path = sel.recv + "::" + conc
+            # Qualify turbofish args against the dep crate: bare idents
+            # need crate:: paths, not fuzz-crate-relative names.
+            inner = conc.strip("<>").split(", ")
+            qual = ", ".join(
+                f"{sel.package.replace('-', '_')}::{_qualify_type(crate, a)}"
+                if a and not a.startswith(("&", "*")) else a
+                for a in inner)
+            recv_path = f"{sel.recv}::<{qual}>"
     fuzz_dir = crate / "fuzz" / "fuzz_targets"
     fuzz_dir.mkdir(parents=True, exist_ok=True)
     name = f"fuzzgen_{sel.name}"
@@ -184,7 +239,8 @@ libfuzzer-sys = "0.4"
 """
             + bin_entry
         )
-    return RustGenResult("OK", target_path=fuzz_dir / f"{name}.rs")
+    return RustGenResult("OK", target_path=fuzz_dir / f"{name}.rs",
+                       reason=locals().get("recv_note") or None)
 
 
 def build_argv(crate: Path, target: str) -> list[str]:

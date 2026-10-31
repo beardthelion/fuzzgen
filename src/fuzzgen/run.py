@@ -245,6 +245,7 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     gen = rustlane.gen_harness(sel, probe_res, worktree)
     if gen.status != "OK":
         return gen.status, gen.reason, 0, 0
+    recv_note = gen.reason or ""
     ok, why = rustlane.rust_lane_available()
     if not ok:
         return "TOOL-MISSING", why, 0, 0
@@ -308,7 +309,7 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     except OSError as exc:
         return "DISK-CAP", f"record write failed: {exc}", len(deduper.records), execs
     status = "INTERRUPTED" if interrupted else "OK"
-    return status, None, len(deduper.records), execs
+    return status, recv_note or None, len(deduper.records), execs
 
 
 def _count_execs(text: str) -> int:
@@ -316,7 +317,11 @@ def _count_execs(text: str) -> int:
     `Done N runs` / `#N` counters."""
     import re
 
-    total = sum(int(m.group(1)) for m in re.finditer(r"execs:\s*(\d+)", text))
+    # Go progress lines are cumulative: the last `execs: N` is the round
+    # total, not a per-line delta.
+    execs_lines = [int(m.group(1))
+                   for m in re.finditer(r"execs:\s*(\d+)", text)]
+    total = execs_lines[-1] if execs_lines else 0
     done = re.search(r"Done\s+(\d+)\s+runs", text)
     if done:
         total += int(done.group(1))
