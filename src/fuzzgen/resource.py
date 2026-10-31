@@ -118,7 +118,7 @@ def measure_replay(
 
 
 def extract_alloc_attempt(stderr: str) -> tuple[int | None, str | None]:
-    """alloc_attempt_bytes from lane output; (bytes, source_build) — caller tags."""
+    """alloc_attempt_bytes from lane output; (bytes, source_build), caller tags."""
     m = re.search(r"allocation of (\d+) bytes failed", stderr)
     if m:
         return int(m.group(1)), "sanitized"

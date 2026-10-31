@@ -1,4 +1,4 @@
-"""triage: re-dedup crash records, rebuild summaries — a true fixed point.
+"""triage: re-dedup crash records, rebuild summaries, a true fixed point.
 
 Each crashes/<hash>/ dir is re-hashed from its stack.txt; records that
 collapse under the current rules merge (hits summed, smallest input
