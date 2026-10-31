@@ -37,7 +37,11 @@ def prepare(args, work_root: Path | None = None, sel=None):
     if leftovers:
         raise Stopped(f"leftover worktree state at {leftovers[0]}; remove it manually")
     try:
-        worktree, warns = gitops.worktree_add_detached(repo, sha=sha, work_root=work_root)
+        submodules = getattr(args, "submodules", None)
+        paths = [p for p in submodules.split(",") if p] if submodules else None
+        worktree, warns = gitops.worktree_add_detached(
+            repo, sha=sha, work_root=work_root, submodule_paths=paths
+        )
     except gitops.GitError as exc:
         raise Stopped(f"worktree add failed: {exc}")
     warnings += warns

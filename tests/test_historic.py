@@ -97,13 +97,13 @@ def test_lighthouse_ssz_historic(tmp_path, monkeypatch):
     tc_env = rustlane.stage_rust_toolchain(work_dir)
     golane.provision_for_rung(mechanism, crate, work_dir)
     assert rustlane.fetch_deps(crate, work_dir)
-    res = rustlane.build(crate, "fuzz_decode_length", mechanism, work_dir,
+    res = rustlane.build(crate, crate, "fuzz_decode_length", mechanism, work_dir,
                          tc_env=tc_env)
     assert res.returncode == 0, res.stderr[-800:]
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     stage = tmp_path / "stage"
-    res = rustlane.fuzz_round(crate, "fuzz_decode_length", corpus, stage,
+    res = rustlane.fuzz_round(crate, crate, "fuzz_decode_length", corpus, stage,
                               120, mechanism, work_dir, tc_env=tc_env)
     crashers = rustlane.harvest_crashers(crate, "fuzz_decode_length", stage)
     art_dir = crate / "fuzz" / "artifacts" / "fuzz_decode_length"

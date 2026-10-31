@@ -60,6 +60,25 @@ pre-existing manifest, gen appends only its own [[bin]] entry (verified:
 git diff on httparse is additions-only and `cargo fuzz list` shows the
 6 original targets plus the generated one).
 
+### chia_rs @ 56ecaa0 (Rust, workspace, bwrap)
+
+`fuzzgen run --repo chia_rs --lang rust --seconds 60
+clvm-utils::tree_hash::tree_hash_from_bytes` -> `{"status":"OK",
+"execs":449151,"crashes":0}`. The generated harness emits the
+crate-root public path (`clvm_utils::tree_hash_from_bytes`) since
+`tree_hash` is a private module re-exported in lib.rs. Second leg
+`chia-bls::signature::hash_to_g2` -> `{"status":"OK"}`.
+
+### neon (Rust, workspace, uninit submodules, bwrap)
+
+`fuzzgen run --repo neon --lang rust --seconds 60
+postgres-protocol2::types::array_from_sql` -> `{"status":"OK",
+"execs":15708433,"crashes":0}`. The run resolved the member crate via
+name-scan (cargo metadata fails when submodule manifests are absent),
+emitted `[workspace]` plus the hyphenated package dep name, and never
+cloned vendor/postgres-v14..v17 (worktree submodule init is opt-in
+via --submodules).
+
 ### Historic crash leg (lighthouse ssz, commit 561167fa1)
 
 sigp/lighthouse `561167fa1 Fix panic in ssz decode` (2018) changes one

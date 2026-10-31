@@ -46,6 +46,8 @@ def _common(p: argparse.ArgumentParser) -> None:
 
 def _lane_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lang", choices=["go", "rust", "c"], default=None)
+    p.add_argument("--submodules", default=None,
+                   help="comma-separated submodule paths to init (default: none)")
     p.add_argument(
         "--mode", choices=["bytes", "struct", "ssz", "rlp"], default=None
     )

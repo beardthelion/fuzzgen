@@ -183,13 +183,65 @@ def test_rust_lane_bwrap_fuzz_round(tmp_path):
     assert gen.status == "OK"
     tc_env = rustlane.stage_rust_toolchain(wd)
     assert rustlane.fetch_deps(crate, wd)
-    res = rustlane.build(crate, "fuzzgen_decode", contain.MECH_BWRAP, wd,
+    res = rustlane.build(crate, crate, "fuzzgen_decode", contain.MECH_BWRAP, wd,
                          tc_env=tc_env)
     assert res.returncode == 0, res.stderr[-600:]
     corpus = tmp_path / "out-corpus"  # outside the crate and work_dir
     corpus.mkdir()
     stage = tmp_path / "out-stage"
-    res = rustlane.fuzz_round(crate, "fuzzgen_decode", corpus, stage, 10,
+    res = rustlane.fuzz_round(crate, crate, "fuzzgen_decode", corpus, stage, 10,
                               contain.MECH_BWRAP, wd, tc_env=tc_env)
     assert res.returncode == 0, res.stderr[-600:]
     assert "#" in res.stderr or "exec" in res.stderr
+
+
+def test_rust_public_path_drops_private_mod(tmp_path):
+    """mod x; pub use x::f -> harness calls krate::f, not krate::x::f."""
+    crate = tmp_path / "krate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "krate"\nversion = "0.1.0"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "mod x;\npub use x::f;\n")
+    (crate / "src" / "x.rs").write_text("pub fn f(_: &[u8]) {}\n")
+    sel = parse_selector("krate::x::f", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes"), tmp_path)
+    assert res.status == "OK"
+    src = res.target_path.read_text()
+    assert "krate::f(data)" in src
+
+
+def test_rust_workspace_member_gets_workspace_table(tmp_path):
+    crate = tmp_path / "ws" / "crates" / "foo-bar"
+    (crate / "src").mkdir(parents=True)
+    (tmp_path / "ws" / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["crates/foo-bar"]\n')
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "foo-bar"\nversion.workspace = true\n')
+    (crate / "src" / "lib.rs").write_text("pub fn decode(_: &[u8]) {}\n")
+    sel = parse_selector("foo-bar::decode", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes"), tmp_path / "ws")
+    assert res.status == "OK"
+    assert "[workspace]" in (crate / "fuzz" / "Cargo.toml").read_text()
+
+
+def test_rust_crate_dir_normalizes_both_forms(tmp_path):
+    from fuzzgen import selectors
+    ws = tmp_path / "ws"
+    d = ws / "crates" / "foo-bar"
+    (d / "src").mkdir(parents=True)
+    (d / "Cargo.toml").write_text('[package]\nname = "foo-bar"\n')
+    for form in ("foo-bar", "foo_bar"):
+        dirs = selectors.rust_crate_dirs(ws, form)
+        assert dirs == [d], (form, dirs)
+
+
+def test_build_fail_notes_error_first(tmp_path):
+    """error[ / ^error lines lead the notes; full stderr saved to file."""
+    from fuzzgen.run import _run_rust  # noqa
+    import re
+    err = "\n".join([f"warning: w{i}" for i in range(30)]) + \
+        "\nerror[E0603]: unresolved import\n"
+    errs = [l for l in err.splitlines()
+            if re.match(r"^error(\[|:)|^\s*-->", l)]
+    assert errs[0].startswith("error[E0603]")

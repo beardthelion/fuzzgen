@@ -69,6 +69,7 @@ def worktree_add_detached(
     repo: Path,
     sha: str | None = None,
     work_root: Path | None = None,
+    submodule_paths: list[str] | None = None,
 ) -> tuple[Path, list[str]]:
     """Add a detached worktree; returns (path, warnings).
 
@@ -94,16 +95,20 @@ def worktree_add_detached(
         _git(["worktree", "prune"], cwd=repo)
         _git(["-c", "core.hooksPath=/dev/null",
               "worktree", "add", "--detach", str(dest), sha], cwd=repo)
-        _git(
-            [
-                "-c", "protocol.file.allow=never",
-                "-c", "protocol.ext.allow=never",
-                "-c", "credential.helper=",
-                "-c", "core.hooksPath=/dev/null",
-                "submodule", "update", "--init", "--recursive",
-            ],
-            cwd=dest,
-        )
+        if submodule_paths:
+            # Init only the named submodules; a full recursive init can
+            # clone large vendor trees the target never needs.
+            _git(
+                [
+                    "-c", "protocol.file.allow=never",
+                    "-c", "protocol.ext.allow=never",
+                    "-c", "credential.helper=",
+                    "-c", "core.hooksPath=/dev/null",
+                    "submodule", "update", "--init", "--recursive", "--",
+                    *submodule_paths,
+                ],
+                cwd=dest,
+            )
         (dest / ACTIVE_MARKER).write_text(f"repo={repo}\nsha={sha}\n")
     except GitError:
         # Anything after `worktree add` must not leave refusing residue.

@@ -38,6 +38,41 @@ def rust_lane_available() -> tuple[bool, str]:
     return True, ""
 
 
+def _public_path(crate: Path, parts: list[str]) -> str:
+    """Shortest public path to the symbol: drop non-pub module segments
+    when lib.rs re-exports them (`pub use mod::*` or `pub use mod::sym`)."""
+    import re
+
+    lib_rs = crate / "src" / "lib.rs"
+    if len(parts) <= 1 or not lib_rs.is_file():
+        return "::".join(parts)
+    try:
+        text = lib_rs.read_text(errors="replace")
+    except OSError:
+        return "::".join(parts)
+    # Private top-level module segment with a re-export -> drop it.
+    lead = parts[0]
+    if re.search(rf"^\s*(?:pub\s+)?mod\s+{re.escape(lead)}\b", text, re.M) and \
+       not re.search(rf"^\s*pub\s+mod\s+{re.escape(lead)}\b", text, re.M):
+        name = parts[-1]
+        for m in re.finditer(
+            rf"pub\s+use\s+{re.escape(lead)}\s*::\s*(\*|{{[^}}]*}}|\w+)",
+            text,
+        ):
+            exported = m.group(1)
+            if exported == "*" or name in exported:
+                return name
+    return "::".join(parts)
+
+
+def _is_workspace_member(crate: Path) -> bool:
+    """True when the crate's manifest references workspace inheritance."""
+    try:
+        return "workspace" in (crate / "Cargo.toml").read_text(errors="replace")
+    except OSError:
+        return False
+
+
 def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGenResult:
     if sel.recv:
         return RustGenResult(
@@ -51,9 +86,9 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGe
     fuzz_dir = crate / "fuzz" / "fuzz_targets"
     fuzz_dir.mkdir(parents=True, exist_ok=True)
     name = f"fuzzgen_{sel.name}"
-    parts = sel.raw.split("::")
-    path = "::".join(parts[1:-1] + [parts[-1]]) if len(parts) > 2 else sel.name
+    path = _public_path(crate, sel.raw.split("::")[1:])
     crate_ident = sel.package.replace("-", "_")
+    dep_name = sel.package  # manifest dep keeps the real package name
     src = TMPL.read_text().replace("{{.Crate}}", crate_ident).replace("{{.Path}}", path)
     (fuzz_dir / f"{name}.rs").write_text(src)
     # cargo-fuzz needs the fuzz crate scaffold: fuzz/Cargo.toml naming
@@ -69,6 +104,9 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGe
         if f'name = "{name}"' not in text:
             manifest.write_text(text.rstrip("\n") + "\n" + bin_entry)
     else:
+        # A fuzz crate inside a workspace member must declare its own
+        # workspace or cargo walks up to the parent's [workspace].
+        ws = "[workspace]\n" if _is_workspace_member(crate) else ""
         manifest.write_text(
             f"""[package]
 name = "fuzzgen-fuzz"
@@ -76,12 +114,12 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
-[package.metadata]
+{ws}[package.metadata]
 cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-{crate_ident} = {{ path = ".." }}
+{dep_name} = {{ path = ".." }}
 """
             + bin_entry
         )
@@ -177,22 +215,23 @@ def _asan_rlimits() -> dict:
     return {**contain.default_rlimits(), "as": "unlimited"}
 
 
-def build(crate: Path, name: str, mechanism: str, work_dir: Path,
+def build(root: Path, crate: Path, name: str, mechanism: str, work_dir: Path,
           tc_env: dict | None = None) -> "runner.Result":
-    # The whole crate binds as the worktree so `path = ".."` deps resolve
-    # on every rung; the rung chdir's into fuzz/ where the manifest lives.
+    # The whole repo binds as the worktree so workspace inheritance and
+    # `path = ".."` deps resolve on every rung; the rung chdir's into
+    # crate/fuzz/ where the manifest lives.
     argv = contain.contained_argv(
         mechanism,
         ["cargo", "+nightly", "fuzz", "build", "-s", "address", name],
-        crate, work_dir, env=_cargo_env(work_dir, tc_env),
+        root, work_dir, env=_cargo_env(work_dir, tc_env),
         rlimits=_asan_rlimits(),
         chdir=str(crate / "fuzz"),
     )
     return runner.run_bounded(argv, timeout=1800, cwd=crate / "fuzz")
 
 
-def fuzz_round(crate: Path, name: str, corpus: Path, stage: Path, seconds: int,
-               mechanism: str, work_dir: Path, jobs: int = 1,
+def fuzz_round(root: Path, crate: Path, name: str, corpus: Path, stage: Path,
+               seconds: int, mechanism: str, work_dir: Path, jobs: int = 1,
                tc_env: dict | None = None) -> "runner.Result":
     stage.mkdir(parents=True, exist_ok=True)
     cmd = ["cargo", "+nightly", "fuzz", "run", "-s", "address", name,
@@ -205,11 +244,11 @@ def fuzz_round(crate: Path, name: str, corpus: Path, stage: Path, seconds: int,
     rw = []
     for p in (corpus, stage):
         rp = Path(p).resolve()
-        if not str(rp).startswith(str(crate.resolve())) and \
+        if not str(rp).startswith(str(root.resolve())) and \
            not str(rp).startswith(str(work_dir.resolve())):
             rw.append((rp, rp))
     argv = contain.contained_argv(
-        mechanism, cmd, crate, work_dir, env=_cargo_env(work_dir, tc_env),
+        mechanism, cmd, root, work_dir, env=_cargo_env(work_dir, tc_env),
         rlimits={**_asan_rlimits(), "cpu": str(seconds + 300)},
         chdir=str(crate / "fuzz"), rw_mounts=rw,
     )

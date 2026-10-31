@@ -236,13 +236,21 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     tc_env = rustlane.stage_rust_toolchain(work_dir)
     golane.provision_for_rung(mechanism, worktree, work_dir)
     rustlane.fetch_deps(crate, work_dir)
-    res = rustlane.build(crate, name, mechanism, work_dir, tc_env)
+    res = rustlane.build(worktree, crate, name, mechanism, work_dir, tc_env)
     if res.error or res.timed_out:
         return "RUN-FAIL", res.error or "build timeout", 0, 0
     if res.returncode != 0:
-        # Head carries the actual compile error; the tail is cargo noise.
+        # Error lines first (warnings preamble buries them), full stderr
+        # to a file under the out dir.
         err = res.stderr or res.stdout
-        reason = err[:300] if len(err) <= 700 else f"{err[:300]}\n...\n{err[-400:]}"
+        try:
+            (out_dir / "build_stderr.txt").write_text(err)
+        except OSError:
+            pass
+        import re
+        errs = [l for l in err.splitlines()
+                if re.match(r"^error(\[|:)|^\s*-->", l)][:6]
+        reason = "\n".join(errs) if errs else err[:300]
         return "BUILD-FAIL", reason, 0, 0
     seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
     # The engine writes new corpus inputs into this dir; under bwrap only
@@ -255,7 +263,7 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     execs = 0
     interrupted = False
     res = rustlane.fuzz_round(
-        crate, name, corpus, stage, seconds, mechanism, work_dir,
+        worktree, crate, name, corpus, stage, seconds, mechanism, work_dir,
         jobs=getattr(args, "jobs", 1) or 1, tc_env=tc_env,
     )
     execs += _count_execs(res.stdout + res.stderr)

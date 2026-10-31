@@ -109,16 +109,36 @@ def rust_crate_dirs(repo: Path, crate: str) -> list[Path]:
             meta = json.loads(proc.stdout)
             for pkg in meta.get("packages", []):
                 name = pkg.get("name", "").replace("-", "_")
-                if name == crate:
+                if name == crate.replace("-", "_"):
                     d = Path(pkg["manifest_path"]).resolve().parent
                     if os.path.commonpath([str(root), str(d)]) == str(root):
                         dirs.append(d)
         except (json.JSONDecodeError, KeyError):
             pass
     if not dirs:
-        for cand in (repo / crate, repo / "crates" / crate, repo):
+        alt = crate.replace("_", "-")
+        cands = [repo / crate, repo / "crates" / crate,
+                 repo / alt, repo / "crates" / alt]
+        for cand in dict.fromkeys(cands):  # alt can equal crate
             if (cand / "Cargo.toml").is_file():
                 dirs.append(cand)
+    if not dirs:
+        # Metadata fails when a workspace member's manifest is missing
+        # (uninit submodules); scan for the crate name directly.
+        wanted = crate.replace("-", "_")
+        for p in sorted(root.rglob("Cargo.toml")):
+            if p.is_symlink() or ".git" in p.parts:
+                continue
+            try:
+                head = p.read_text(errors="replace")[:4000]
+            except OSError:
+                continue
+            import re
+            m = re.search(r'(?m)^name\s*=\s*"([^"]+)"', head)
+            if m and m.group(1).replace("-", "_") == wanted:
+                dirs.append(p.parent)
+        if not dirs and (repo / "Cargo.toml").is_file():
+            dirs.append(repo)  # root only when no member matched
     return dirs
 
 
