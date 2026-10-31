@@ -67,7 +67,15 @@ clvm-utils::tree_hash::tree_hash_from_bytes` -> `{"status":"OK",
 "execs":449151,"crashes":0}`. The generated harness emits the
 crate-root public path (`clvm_utils::tree_hash_from_bytes`) since
 `tree_hash` is a private module re-exported in lib.rs. Second leg
-`chia-bls::signature::hash_to_g2` -> `{"status":"OK"}`.
+`chia-bls::signature::hash_to_g2` -> `{"status":"OK","execs":25265}`
+(15s box), raw bwrap stderr tail:
+
+```
+INFO: -fork=1: fuzzing in separate process(s)
+#25265: cov: 0 ft: 0 corp: 0 exec/s: 1263 oom/timeout/crash: 0/0/0 time: 20s job: 5
+INFO: fuzzed for 20 seconds, wrapping up soon
+INFO: exiting: 0 time: 20s
+```
 
 ### neon (Rust, workspace, uninit submodules, bwrap)
 
@@ -77,7 +85,13 @@ postgres-protocol2::types::array_from_sql` -> `{"status":"OK",
 name-scan (cargo metadata fails when submodule manifests are absent),
 emitted `[workspace]` plus the hyphenated package dep name, and never
 cloned vendor/postgres-v14..v17 (worktree submodule init is opt-in
-via --submodules).
+via --submodules). Raw bwrap stderr tail (15s rerun, 5,013,811 execs):
+
+```
+#5013811: cov: 54 ft: 79 corp: 20 exec/s: 263118 oom/timeout/crash: 0/0/0 time: 20s job: 5
+INFO: fuzzed for 20 seconds, wrapping up soon
+INFO: exiting: 0 time: 20s
+```
 
 ### Historic crash leg (lighthouse ssz, commit 561167fa1)
 

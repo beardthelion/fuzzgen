@@ -215,6 +215,19 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     return status, None, len(deduper.records), execs
 
 
+def _build_fail_reason(err: str, out_dir) -> str:
+    """error[/error:/--> lines first; full stderr saved under out_dir."""
+    import re
+
+    try:
+        (out_dir / "build_stderr.txt").write_text(err)
+    except OSError:
+        pass
+    errs = [l for l in err.splitlines()
+            if re.match(r"^error(\[|:)|^\s*-->", l)][:6]
+    return "\n".join(errs) if errs else err[:300]
+
+
 def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
               out_dir, fields):
     """cargo-fuzz build + fuzz + harvest + dedup + records for one target."""
@@ -240,18 +253,7 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     if res.error or res.timed_out:
         return "RUN-FAIL", res.error or "build timeout", 0, 0
     if res.returncode != 0:
-        # Error lines first (warnings preamble buries them), full stderr
-        # to a file under the out dir.
-        err = res.stderr or res.stdout
-        try:
-            (out_dir / "build_stderr.txt").write_text(err)
-        except OSError:
-            pass
-        import re
-        errs = [l for l in err.splitlines()
-                if re.match(r"^error(\[|:)|^\s*-->", l)][:6]
-        reason = "\n".join(errs) if errs else err[:300]
-        return "BUILD-FAIL", reason, 0, 0
+        return "BUILD-FAIL", _build_fail_reason(res.stderr or res.stdout, out_dir), 0, 0
     seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
     # The engine writes new corpus inputs into this dir; under bwrap only
     # work_dir is bound rw, so corpus lives there and gets swept out.
@@ -267,6 +269,10 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
         jobs=getattr(args, "jobs", 1) or 1, tc_env=tc_env,
     )
     execs += _count_execs(res.stdout + res.stderr)
+    try:
+        (out_dir / "fuzz_stderr.txt").write_text(res.stderr)
+    except OSError:
+        pass
     out_corpus.mkdir(parents=True, exist_ok=True)
     for p in corpus.iterdir():
         if p.is_file() and not p.is_symlink():

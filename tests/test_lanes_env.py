@@ -212,17 +212,40 @@ def test_rust_public_path_drops_private_mod(tmp_path):
 
 
 def test_rust_workspace_member_gets_workspace_table(tmp_path):
-    crate = tmp_path / "ws" / "crates" / "foo-bar"
+    """Workspace member gets [workspace]; the member builds under bwrap."""
+    import shutil
+    import subprocess
+    import pytest
+    from fuzzgen import contain
+
+    if not shutil.which("bwrap") or not shutil.which("cargo"):
+        pytest.skip("bwrap or cargo absent")
+    probe = subprocess.run(
+        ["bwrap", "--unshare-all", "--ro-bind", "/", "/", "true"],
+        capture_output=True, timeout=20,
+    )
+    if probe.returncode != 0:
+        pytest.skip("bwrap namespaces unavailable on this kernel")
+    ws_root = tmp_path / "ws"
+    crate = ws_root / "crates" / "foo-bar"
     (crate / "src").mkdir(parents=True)
-    (tmp_path / "ws" / "Cargo.toml").write_text(
-        '[workspace]\nmembers = ["crates/foo-bar"]\n')
+    (ws_root / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["crates/foo-bar"]\n'
+        '[workspace.package]\nversion = "0.1.0"\n')
     (crate / "Cargo.toml").write_text(
         '[package]\nname = "foo-bar"\nversion.workspace = true\n')
     (crate / "src" / "lib.rs").write_text("pub fn decode(_: &[u8]) {}\n")
     sel = parse_selector("foo-bar::decode", "rust")
-    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes"), tmp_path / "ws")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes"), ws_root)
     assert res.status == "OK"
     assert "[workspace]" in (crate / "fuzz" / "Cargo.toml").read_text()
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    tc_env = rustlane.stage_rust_toolchain(wd)
+    assert rustlane.fetch_deps(crate, wd)
+    res = rustlane.build(ws_root, crate, "fuzzgen_decode",
+                         contain.MECH_BWRAP, wd, tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-800:]
 
 
 def test_rust_crate_dir_normalizes_both_forms(tmp_path):
@@ -245,3 +268,15 @@ def test_build_fail_notes_error_first(tmp_path):
     errs = [l for l in err.splitlines()
             if re.match(r"^error(\[|:)|^\s*-->", l)]
     assert errs[0].startswith("error[E0603]")
+
+
+def test_build_fail_reason_error_first(tmp_path):
+    """_build_fail_reason leads with the error line; full stderr saved."""
+    from fuzzgen.run import _build_fail_reason
+
+    err = "\n".join(f"warning: w{i}" for i in range(30)) + \
+        "\nerror[E0603]: unresolved import `x`\n  --> src/lib.rs:1\n"
+    reason = _build_fail_reason(err, tmp_path)
+    assert reason.startswith("error[E0603]")
+    saved = (tmp_path / "build_stderr.txt").read_text()
+    assert "warning: w0" in saved and "error[E0603]" in saved
