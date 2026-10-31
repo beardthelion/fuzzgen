@@ -155,7 +155,9 @@ def provision_writable(path: Path) -> None:
             if os.path.islink(p):
                 continue
             try:
-                os.chmod(p, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+                # Keep +x where it exists (staged toolchain binaries).
+                mode = os.stat(p).st_mode & 0o111
+                os.chmod(p, 0o666 | (0o111 if mode else 0))
             except OSError:
                 pass
 

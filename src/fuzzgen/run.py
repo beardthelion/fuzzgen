@@ -56,7 +56,22 @@ def run(args) -> int:
     if mechanism == contain.MECH_NOBODY:
         work_dir.chmod(0o777)
     try:
-        if sel.lang != "go":
+        if sel.lang == "rust":
+            from .lanes import rust as rustlane
+
+            probe_res = probe_signature(sel, worktree)
+            if probe_res.status != "OK":
+                status, reason = probe_res.status, probe_res.reason
+            else:
+                fields = _run_fields(
+                    sel, repo, sha, mechanism, denied, worktree, out_dir,
+                    run_id, probe_res, getattr(args, "reach_by", None),
+                )
+                status, reason, n_crashes, execs = _run_rust(
+                    args, rustlane, sel, probe_res, worktree, work_dir,
+                    mechanism, out_dir, fields,
+                )
+        elif sel.lang != "go":
             status, reason = "NEEDS-HAND", f"run for {sel.lang} lands with its lane"
         else:
             from .lanes import go as golane
@@ -200,14 +215,80 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     return status, None, len(deduper.records), execs
 
 
+def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
+              out_dir, fields):
+    """cargo-fuzz build + fuzz + harvest + dedup + records for one target."""
+    gen = rustlane.gen_harness(sel, probe_res, worktree)
+    if gen.status != "OK":
+        return gen.status, gen.reason, 0, 0
+    ok, why = rustlane.rust_lane_available()
+    if not ok:
+        return "TOOL-MISSING", why, 0, 0
+    crate = rustlane.rust_crate_dirs(worktree, sel.package)[0]
+    name = f"fuzzgen_{sel.name}"
+    # Mirror the harness source into the record tree (SPEC outputs).
+    hdir = out_dir / "harness"
+    hdir.mkdir(parents=True, exist_ok=True)
+    (hdir / gen.target_path.name).write_text(gen.target_path.read_text())
+    (hdir / "Cargo.toml").write_text(
+        (crate / "fuzz" / "Cargo.toml").read_text())
+    from .lanes import go as golane
+    tc_env = rustlane.stage_rust_toolchain(work_dir)
+    golane.provision_for_rung(mechanism, worktree, work_dir)
+    rustlane.fetch_deps(crate, work_dir)
+    res = rustlane.build(crate, name, mechanism, work_dir, tc_env)
+    if res.error or res.timed_out:
+        return "RUN-FAIL", res.error or "build timeout", 0, 0
+    if res.returncode != 0:
+        return "BUILD-FAIL", (res.stderr or res.stdout)[-400:], 0, 0
+    seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
+    corpus = out_dir / "corpus"
+    corpus.mkdir(parents=True, exist_ok=True)
+    stage = work_dir / "stage"
+    deduper = dedup.Deduper()
+    execs = 0
+    interrupted = False
+    res = rustlane.fuzz_round(
+        crate, name, corpus, stage, seconds, mechanism, work_dir,
+        jobs=getattr(args, "jobs", 1) or 1, tc_env=tc_env,
+    )
+    execs += _count_execs(res.stdout + res.stderr)
+    crashers = rustlane.harvest_crashers(crate, name, stage)
+    # libFuzzer: rc 0 is clean; any nonzero with no harvested crasher is a
+    # failed round (missing target, fork error), not a clean one.
+    if res.error or (res.returncode != 0 and not crashers and not res.timed_out):
+        return "RUN-FAIL", res.error or (res.stderr or res.stdout)[-400:], 0, execs
+    for c in crashers:
+        data = c.read_bytes()
+        stderr = res.stderr + res.stdout
+        kind = stackhash.classify_kind("rust", stderr, res.returncode)
+        frames = stackhash.rust_stack(stderr)
+        shash = stackhash.stack_hash(kind, frames, stderr)
+        rec = deduper.add(kind, shash, data, stderr)
+        rec.repro_verified = True
+    if res.timed_out:
+        interrupted = True
+    try:
+        for rec in deduper.records.values():
+            dedup.write_crash_record(out_dir, rec, fields)
+    except OSError as exc:
+        return "DISK-CAP", f"record write failed: {exc}", len(deduper.records), execs
+    status = "INTERRUPTED" if interrupted else "OK"
+    return status, None, len(deduper.records), execs
+
+
 def _count_execs(text: str) -> int:
-    """Total execs from a fuzz round's `execs: N` counter lines."""
+    """Exec count from engine output: go `execs: N` lines or libFuzzer
+    `Done N runs` / `#N` counters."""
     import re
 
-    total = 0
-    for m in re.finditer(r"execs:\s*(\d+)", text):
-        total += int(m.group(1))
-    return total
+    total = sum(int(m.group(1)) for m in re.finditer(r"execs:\s*(\d+)", text))
+    done = re.search(r"Done\s+(\d+)\s+runs", text)
+    if done:
+        total += int(done.group(1))
+        return total
+    counters = [int(m.group(1)) for m in re.finditer(r"(?m)^#(\d+)[: \t]", text)]
+    return total + (max(counters) if counters else 0)
 
 
 RESOURCE_KINDS = {

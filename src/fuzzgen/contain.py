@@ -40,8 +40,10 @@ ENV_ALLOW = frozenset(
         "GOPATH",
         "GOFLAGS",
         "GOMEMLIMIT",
+        "CARGO",
         "CARGO_HOME",
         "CARGO_TARGET_DIR",
+        "RUSTUP_HOME",
         "RUSTFLAGS",
         "RUST_BACKTRACE",
         "ASAN_OPTIONS",
@@ -181,7 +183,7 @@ def contained_argv(
     if mechanism == MECH_NOBODY:
         env_args = [f"{k}={v}" for k, v in sorted(env.items())]
         argv = ["sudo", "-n", "-u", "nobody",
-                "env", "-i", f"HOME={wd}", "PATH=/usr/local/bin:/usr/bin:/bin",
+                "env", "-i", f"HOME={wd}", f"PATH={_toolchain_path()}",
                 *env_args]
         rl = rlimits or {}
         if rl:

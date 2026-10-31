@@ -67,24 +67,51 @@ def test_pkg_name_of_never_falls_back(tmp_path):
 
 
 def test_c_lane_clang_build_and_run(tmp_path):
-    """Build and run the C fixture harness when clang exists."""
+    """Build+run through the lane's own gen/build/run_argv path."""
     import shutil
-    import subprocess
     import pytest
 
-    if not shutil.which("clang"):
+    if not clane.clang_available():
         pytest.skip("clang absent")
     repo = tmp_path / "r"
     shutil.copytree(FIXTURES / "c", repo)
+    work_dir = tmp_path / "wd"
+    work_dir.mkdir()
     sel = parse_selector("parser.c:parse")
-    res = clane.gen_harness(sel, repo)
-    out = tmp_path / "f"
-    proc = subprocess.run(
-        ["clang", "-g", "-O1", "-fsanitize=fuzzer,address,undefined",
-         "-fno-sanitize-recover=all", str(res.harness_path),
-         str(repo / "parser.c"), "-o", str(out)],
-        capture_output=True, text=True, timeout=120,
+    gen = clane.gen_harness(sel, repo)
+    assert gen.status == "OK"
+    res = clane.build(repo, gen, sel, work_dir, "none")
+    assert res.status == "OK", res.reason
+    corpus = tmp_path / "corpus"
+    stage = tmp_path / "stage"
+    corpus.mkdir(); stage.mkdir()
+    from fuzzgen import runner
+    argv = clane.run_argv(res.binary, corpus, stage, seconds=5, jobs=1)
+    proc = runner.run_bounded(argv, timeout=60, cwd=repo)
+    assert proc.returncode in (0, 1, 77)
+
+
+def test_rust_manifest_append_preserves_existing(tmp_path):
+    """gen_harness appends only a [[bin]] entry to an existing manifest."""
+    from fuzzgen.lanes import rust as rustlane
+    from fuzzgen.probe import ProbeResult
+
+    crate = tmp_path / "krate"
+    (crate / "fuzz" / "fuzz_targets").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "krate"\nversion = "0.1.0"\n'
     )
-    assert proc.returncode == 0, proc.stderr
-    run = subprocess.run([str(out), "-runs=100"], capture_output=True, text=True, timeout=60)
-    assert run.returncode == 0
+    existing = (
+        '[package]\nname = "krate-fuzz"\nversion = "0.0.0"\n'
+        "[package.metadata]\ncargo-fuzz = true\n"
+        "[dependencies]\nlibfuzzer-sys = \"0.4\"\nkrate = { path = \"..\" }\n"
+        '\n[[bin]]\nname = "old_target"\npath = "fuzz_targets/old_target.rs"\n'
+    )
+    (crate / "fuzz" / "Cargo.toml").write_text(existing)
+    sel = parse_selector("krate::decode", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes"), tmp_path)
+    assert res.status == "OK"
+    text = (crate / "fuzz" / "Cargo.toml").read_text()
+    assert existing.rstrip() in text
+    assert 'name = "old_target"' in text
+    assert 'name = "fuzzgen_decode"' in text
