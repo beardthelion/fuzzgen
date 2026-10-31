@@ -298,3 +298,63 @@ def test_fuzz_stderr_names_detected_rung(tmp_path):
     line1 = (out / "fuzz_stderr.txt").read_text().splitlines()[0]
     assert mech in line1
     assert contain.MECH_DETAIL[mech] in line1
+
+
+def test_rust_assoc_fn_emits_type_call(tmp_path):
+    crate = tmp_path / "krate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text('[package]\nname = "krate"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "pub struct PeerId(u64);\n"
+        "impl PeerId { pub fn from_bytes(_: &[u8]) -> Self { PeerId(0) } }\n")
+    sel = parse_selector("krate::PeerId::from_bytes", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
+                                                args=["&[u8]"]), tmp_path)
+    assert res.status == "OK"
+    assert "PeerId::from_bytes(data)" in res.target_path.read_text()
+
+
+def test_rust_generic_recv_turbofish(tmp_path):
+    crate = tmp_path / "krate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text('[package]\nname = "krate"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "pub struct Inner;\npub struct Key<K> { _k: std::marker::PhantomData<K> }\n"
+        "impl Key<Inner> { pub fn from_bytes(_: &[u8]) -> Self "
+        "{ Key { _k: std::marker::PhantomData } } }\n")
+    sel = parse_selector("krate::Key::from_bytes", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
+                                                args=["&[u8]"]), tmp_path)
+    assert res.status == "OK"
+    assert "Key::<Inner>::from_bytes(data)" in res.target_path.read_text()
+
+
+def test_go_method_receiver_decl(tmp_path):
+    from fuzzgen.lanes import go as golane
+    sel = parse_selector("pkg.Inputs.UnmarshalJSON", "go")
+    src = golane.render(sel, ProbeResult("OK", kind="bytes",
+                                         args=["[]byte"]), "pkg", "Fuzz")
+    assert "var v Inputs" in src
+    assert "v.UnmarshalJSON(data)" in src
+
+
+def test_go_fuzz_passes_timeout_flag():
+    from fuzzgen import contain, runner
+    captured = {}
+
+    class R:
+        pass
+
+    orig = runner.run_bounded
+    runner.run_bounded = lambda argv, **kw: captured.setdefault(
+        "argv", argv) and runner.Result(argv, 0, "", "", False, 0, None)
+    try:
+        from fuzzgen.lanes import go as golane
+        import tempfile
+        wt = Path(tempfile.mkdtemp(dir="/var/tmp"))
+        (wt / "sub").mkdir()
+        golane.fuzz_round(wt, wt / "sub", "F", 10, contain.MECH_NONE, wt, jobs=1)
+    finally:
+        runner.run_bounded = orig
+    assert "-timeout" in captured["argv"]
+    assert "0s" in captured["argv"]

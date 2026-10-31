@@ -73,20 +73,81 @@ def _is_workspace_member(crate: Path) -> bool:
         return False
 
 
+def _concrete_recv(crate: Path, recv: str) -> str | None:
+    """Turbofish args for generic recv types: single in-crate concrete
+    impl wins, then type-param defaults; None when unresolvable."""
+    import re
+
+    impl_args: set[str] = set()
+    params: set[str] = set()
+    defaults: str | None = None
+    for f in sorted((crate / "src").rglob("*.rs")):
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        for m in re.finditer(
+            rf"(?:struct|enum|type)\s+{re.escape(recv)}\s*<([^>]*)>", text
+        ):
+            decl = m.group(1)
+            params |= set(re.findall(r"([A-Za-z_]\w*)\s*[:=,]", decl))
+            params |= set(re.findall(r",\s*([A-Za-z_]\w*)\s*[:=]", "," + decl))
+            params |= set(re.findall(r"^([A-Za-z_]\w*)\s*[,>]", decl))
+            ds = re.findall(r"\w+\s*=\s*([\w:]+)", decl)
+            if len(ds) == decl.count(",") + 1:
+                defaults = "<" + ", ".join(ds) + ">"
+        for m in re.finditer(
+            rf"(?:impl|::|=)\s*{re.escape(recv)}\s*<\s*([^<>]+)\s*>", text
+        ):
+            impl_args.add(m.group(1).strip())
+    # Generic param names (the decl's own <C>) are not concrete impls.
+    concrete = {a for a in impl_args if a not in params}
+    if defaults and not concrete:
+        return defaults
+    if len(concrete) == 1:
+        return "<" + next(iter(concrete)) + ">"
+    return None
+
+
 def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGenResult:
-    if sel.recv:
-        return RustGenResult(
-            "NEEDS-HAND",
-            reason="method selector: receiver construction is target-specific",
-        )
     dirs = rust_crate_dirs(worktree, sel.package)
     if not dirs:
         return RustGenResult("PROBE-FAIL", reason=f"crate {sel.package} not found")
     crate = dirs[0]
+    recv_path = None
+    if sel.recv:
+        args = probe_res.args or ["&[u8]"]
+        first = args[0] if args else "&[u8]"
+        if first not in ("&[u8]", "&str", "str"):
+            return RustGenResult(
+                "NEEDS-HAND",
+                reason=f"associated fn first param {first} is not &[u8]/&str",
+            )
+        recv_path = sel.recv
+        # Generic receiver: emit Type::<T>::fn or NEEDS-HAND when the
+        # concrete type cannot be resolved (E0283 otherwise).
+        conc = _concrete_recv(crate, sel.recv)
+        if conc is None:
+            import re
+            if re.search(rf"{re.escape(sel.recv)}\s*<",
+                         (crate / "src").read_text(errors="replace")
+                         if (crate / "src").is_file() else "") or                any(re.search(rf"{re.escape(sel.recv)}\s*<",
+                             f.read_text(errors="replace"))
+                   for f in (crate / "src").rglob("*.rs")):
+                return RustGenResult(
+                    "NEEDS-HAND",
+                    reason=f"generic receiver {sel.recv}: no single concrete "
+                           "impl or default type params resolvable",
+                )
+        else:
+            recv_path = sel.recv + "::" + conc
     fuzz_dir = crate / "fuzz" / "fuzz_targets"
     fuzz_dir.mkdir(parents=True, exist_ok=True)
     name = f"fuzzgen_{sel.name}"
-    path = _public_path(crate, sel.raw.split("::")[1:])
+    if recv_path:
+        path = f"{recv_path}::{sel.name}"
+    else:
+        path = _public_path(crate, sel.raw.split("::")[1:])
     crate_ident = sel.package.replace("-", "_")
     dep_name = sel.package  # manifest dep keeps the real package name
     src = TMPL.read_text().replace("{{.Crate}}", crate_ident).replace("{{.Path}}", path)

@@ -54,22 +54,29 @@ FUZZABLE_TYPES = {
 }
 
 
-def _call_expr(sel: Selector, kind: str, args: list[str]) -> tuple[str, str]:
+def _call_expr(sel: Selector, kind: str, args: list) -> tuple[str, str]:
     """(arg_decl, call lines) for the probed signature."""
-    recv = sel.name
+    recv = f"v.{sel.name}" if sel.recv else sel.name
     if kind == "bytes" and (not args or "[]byte" in (args[0] or "")):
-        return "data []byte", f"\t\t_ , _ = {recv}(data)\n" if _returns_two(sel) else f"\t\t{recv}(data)\n"
-    if kind == "bytes":
-        return "data []byte", f"\t\t{recv}(data)\n"
-    if kind == "string":
+        call = f"\t\t_ , _ = {recv}(data)\n" if _returns_two(sel) else f"\t\t{recv}(data)\n"
+    elif kind == "bytes":
+        call = f"\t\t{recv}(data)\n"
+    elif kind == "string":
         return "s string", f"\t\t{recv}(s)\n"
-    if kind == "io-reader":
+    elif kind == "io-reader":
         return "data []byte", f"\t\t{recv}(bytes.NewReader(data))\n"
-    if kind == "multi":
+    elif kind == "multi":
         decls = ", ".join(f"a{i} {t}" for i, t in enumerate(args))
         callargs = ", ".join(f"a{i}" for i in range(len(args)))
-        return decls, f"\t\t{recv}({callargs})\n"
-    return "data []byte", f"\t\t{recv}(data)\n"
+        call = f"\t\t{recv}({callargs})\n"
+        if sel.recv:
+            call = f"\t\tvar v {sel.recv}\n" + call
+        return decls, call
+    else:
+        call = f"\t\t{recv}(data)\n"
+    if sel.recv:
+        call = f"\t\tvar v {sel.recv}\n" + call
+    return "data []byte", call
 
 
 def _returns_two(sel: Selector) -> bool:
@@ -177,11 +184,6 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> GenRes
     """Emit the harness file beside the package in the worktree."""
     if probe_res.status != "OK":
         return GenResult(probe_res.status, reason=probe_res.reason)
-    if sel.recv:
-        return GenResult(
-            "NEEDS-HAND",
-            reason="method selector: receiver construction is target-specific",
-        )
     try:
         pkg_dir = go_package_dir(worktree, sel.package)
     except FileNotFoundError as exc:
@@ -283,6 +285,7 @@ def fuzz_round(
     rel = f"./{pkg_dir.relative_to(worktree)}"
     cmd = ["go", "test", "-run", "^$", "-fuzz", f"^{fuzz}$",
            "-fuzztime", f"{seconds}s", "-count", "1",
+           "-timeout", "0s",
            f"-parallel={jobs}", rel]
     if race:
         cmd += ["-race"]

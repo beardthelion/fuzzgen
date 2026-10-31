@@ -117,6 +117,33 @@ INFO: fuzzed for 20 seconds, wrapping up soon
 INFO: exiting: 0 time: 20s
 ```
 
+### malachite (Rust, workspace, bwrap)
+
+`fuzzgen run --repo malachite --lang rust --seconds 15
+informalsystems-malachitebft-peer::PeerId::from_bytes` -> generated
+`PeerId::from_bytes(data)` with no hand edits, `{"status":"OK",
+"execs":3690491,"crashes":0}`, cov:152 ft:198 corp:46. The generic
+receiver leg `PublicKey::from_sec1_bytes` correctly lands NEEDS-HAND:
+three in-crate `CurveConfig` impls (K256/P256/P384) and no default
+type param means no unambiguous turbofish; notes carry
+"generic receiver PublicKey: no single concrete impl or default type
+params resolvable" instead of an E0283 BUILD-FAIL.
+
+### gitlab-runner (Go, method receiver, bwrap)
+
+`fuzzgen run --repo gitlab-runner --lang go --seconds 15
+gitlab.com/gitlab-org/gitlab-runner/common/spec.Inputs.UnmarshalJSON`
+-> generated `var v Inputs; v.UnmarshalJSON(data)` with no hand
+edits, `{"status":"OK","execs":102340,"crashes":0}` under bwrap.
+
+### gjson 15m leg (Go -timeout fix)
+
+`fuzzgen run --repo gjson --lang go --seconds 900
+github.com/tidwall/gjson.Parse` under bwrap -> `{"status":"OK",
+"execs":1305563523}`: go test's default 10m -timeout would have
+killed the run; with `-timeout 0s` it ran the full 15m and exited
+cleanly. A second 12m leg captured the raw tail; see below.
+
 ### Historic crash leg (lighthouse ssz, commit 561167fa1)
 
 sigp/lighthouse `561167fa1 Fix panic in ssz decode` (2018) changes one

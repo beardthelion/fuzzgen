@@ -159,6 +159,7 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
         )
         crashers = golane.harvest_crashers(pkg_dir, fuzz, stage, before=before)
         execs += _count_execs(res.stdout + res.stderr)
+        _write_round_stderr(out_dir, mechanism, res)
         try:
             golane.harvest_gocache(work_dir, fuzz, out_dir / "corpus")
         except OSError as exc:
