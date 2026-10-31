@@ -57,6 +57,25 @@ NOBODY_RLIMITS = ("as", "cpu", "fsize", "nproc", "nofile")
 TOOLCHAIN_BINDS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt", "/etc")
 
 
+def _toolchain_path() -> str:
+    """PATH inside the ns: dirs of the real toolchain binaries, resolved
+    with shutil.which (cargo in ~/.cargo/bin is a real case on some hosts)."""
+    import shutil
+
+    dirs = []
+    for tool in ("go", "cargo", "rustc", "clang", "cc", "ld", "git",
+                 "python3"):
+        p = shutil.which(tool)
+        if p:
+            d = str(Path(p).resolve().parent)
+            if d not in dirs:
+                dirs.append(d)
+    for d in ("/usr/local/bin", "/usr/bin", "/bin"):
+        if d not in dirs:
+            dirs.append(d)
+    return ":".join(dirs)
+
+
 def _probe(argv: list[str], timeout: int = 20) -> bool:
     try:
         proc = subprocess.run(argv, capture_output=True, timeout=timeout)
@@ -140,20 +159,22 @@ def contained_argv(
         env_args = []
         for k, v in sorted(env.items()):
             env_args += ["--setenv", k, v]
-        argv = ["bwrap", "--unshare-all", "--die-with-parent", "--clearenv"]
+        argv = ["bwrap", "--unshare-all", "--die-with-parent", "--clearenv",
+                "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
         # Toolchain ro-binds first so binaries/libs resolve inside the ns.
         for d in TOOLCHAIN_BINDS:
             if Path(d).exists():
                 argv += ["--ro-bind", d, d]
         argv += ["--bind", wt, wt, "--bind", wd, wd,
-                 "--setenv", "HOME", wd]
+                 "--setenv", "HOME", wd,
+                 "--setenv", "PATH", _toolchain_path()]
         for src, dst in mounts:
             argv += ["--ro-bind", str(src), str(dst)]
         return argv + env_args + ["--", *cmd]
 
     if mechanism == MECH_UNSHARE:
         # Not selectable via detect(): user+net namespaces alone share the
-        # host mount namespace with mapped root — strictly less containment
+        # host mount namespace with mapped root, strictly less containment
         # than nobody. Kept only so argv construction stays testable.
         raise ValueError("unshare rung is not containment (host fs visible)")
 

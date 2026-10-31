@@ -2,7 +2,7 @@
 
 The generated *_fuzz_test.go lands beside the package in the worktree and
 is mirrored into the record tree's harness/ dir. Build checks run under
-the KTD3 rung — compiling a target is executing untrusted code.
+the KTD3 rung, compiling a target is executing untrusted code.
 """
 
 from __future__ import annotations
@@ -104,12 +104,33 @@ def render(sel: Selector, probe_res: ProbeResult, pkg_name: str, fuzz: str) -> s
     return body.replace("{{.Adds}}", adds)
 
 
-def pkg_name_of(pkg_dir: Path) -> str:
+def pkg_name_of(worktree: Path, pkg_dir: Path) -> str | None:
+    """Package name via `go list`; None when it cannot be determined.
+
+    A silently wrong package name produces a "found packages" build
+    error later, so callers must treat None as NEEDS-HAND rather than
+    fall back to "main".
+    """
+    from ..selectors import _GOLIST_ENV
+    import os
+
+    env = dict(_GOLIST_ENV)
+    env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    env["HOME"] = os.environ.get("HOME", "/")
+    rel = pkg_dir.relative_to(worktree)
+    res = runner.run_bounded(
+        ["go", "list", "-f", "{{.Name}}", f"./{rel}"],
+        cwd=worktree, timeout=60, env=env,
+    )
+    if res.returncode == 0 and res.stdout.strip():
+        return res.stdout.strip().splitlines()[-1]
     for p in sorted(pkg_dir.glob("*.go")):
+        if p.is_symlink() or p.name.endswith("_test.go"):
+            continue
         m = re.match(r"package\s+(\w+)", p.read_text(errors="replace"))
-        if m and not p.name.endswith("_test.go"):
+        if m:
             return m.group(1)
-    return "main"
+    return None
 
 
 def provision_writable(path: Path) -> None:
@@ -173,8 +194,14 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> GenRes
             "NEEDS-HAND",
             reason=f"arg types {probe_res.args} outside testing.F's supported set",
         )
+    pname = pkg_name_of(worktree, pkg_dir)
+    if pname is None:
+        return GenResult(
+            "NEEDS-HAND",
+            reason=f"cannot determine package name in {pkg_dir}",
+        )
     fuzz = fuzz_name(sel, pkg_dir)
-    src = render(sel, probe_res, pkg_name_of(pkg_dir), fuzz)
+    src = render(sel, probe_res, pname, fuzz)
     harness = pkg_dir / f"{fuzz.lower()}_fuzz_test.go"
     harness.write_text(src)
     return GenResult("OK", harness_path=harness, fuzz_name=fuzz, pkg_dir=pkg_dir)
@@ -215,10 +242,28 @@ def _go_env(work_dir: Path, extra: dict | None = None) -> dict:
     env = {
         "GOCACHE": str(work_dir / "gocache"),
         "GOPATH": str(work_dir / "gopath"),
+        "GOMODCACHE": str(work_dir / "gomodcache"),
         "HOME": str(work_dir),
     }
     env.update(extra or {})
     return env
+
+
+def fetch_deps(worktree: Path, work_dir: Path, jobs: int = 4) -> bool:
+    """Host-side `go mod download` into the rung's GOMODCACHE.
+
+    Fetch is a network phase run on the host (networkDenied rungs cannot
+    download); the populated cache is then bound read-only into the
+    contained build/fuzz so deps resolve with no network.
+    """
+    import os
+
+    env = dict(os.environ, GOMODCACHE=str(work_dir / "gomodcache"),
+               GOFLAGS="-mod=mod")
+    res = runner.run_bounded(
+        ["go", "mod", "download"], cwd=worktree, timeout=600, env=env
+    )
+    return res.returncode == 0
 
 
 def fuzz_round(
@@ -311,7 +356,7 @@ def replay_once(
     """Replay one input in a fresh contained process for a clean stack.
 
     The corpus dir is cleared first so only the staged file can produce a
-    panic — repro_verified must attest THIS input, not any corpus entry.
+    panic, repro_verified must attest THIS input, not any corpus entry.
     """
     tdir = pkg_dir / "testdata" / "fuzz" / fuzz
     tdir.mkdir(parents=True, exist_ok=True)

@@ -47,6 +47,7 @@ def run(args) -> int:
     status = "OK"
     reason = None
     n_crashes = 0
+    execs = 0
     run_id = os.environ.get("FUZZGEN_RUN_ID") or f"run-{int(time.time())}"
     out_dir = records.out_dir_for(out_root, sel.lang, repo.name, sha, sel.raw)
     work_dir = Path(
@@ -72,7 +73,7 @@ def run(args) -> int:
                         sel, repo, sha, mechanism, denied, worktree, out_dir,
                         run_id, probe_res, getattr(args, "reach_by", None),
                     )
-                    status, reason, n_crashes = _run_go(
+                    status, reason, n_crashes, execs = _run_go(
                         args, golane, sel, gen, worktree, work_dir, mechanism,
                         out_dir, fields,
                     )
@@ -82,7 +83,8 @@ def run(args) -> int:
         for w in warnings:
             sys.stderr.write(f"fuzzgen: warning: {w}\n")
     row = records.target_row(sel.raw, status, lang=sel.lang,
-                             crashes=n_crashes, notes=reason or "")
+                             crashes=n_crashes, execs=execs,
+                             notes=reason or "")
     doc = records.summary_doc(run_id, str(repo), sha, [row])
     try:
         records.write_json(out_dir / "summary.json", doc)
@@ -109,11 +111,17 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
             kind = "string" if (fields.get("args") or [""])[0] == "string" else "bytes"
             seeder.write_go_testdata(seeds.seeds, pkg_dir, fuzz, kind=kind)
     except OSError as exc:
-        return "DISK-CAP", f"corpus write failed: {exc}", 0
+        return "DISK-CAP", f"corpus write failed: {exc}", 0, 0
 
     # Provision only after all host-side writes: dirs created above would be
     # nobody-unwritable otherwise.
     golane.provision_for_rung(mechanism, worktree, work_dir)
+
+    # Dep fetch is a host-side network phase; the populated GOMODCACHE sits
+    # inside work_dir, which every rung already binds, so the contained
+    # build resolves deps with no network.
+    if (worktree / "go.sum").is_file() or any(worktree.glob("**/go.sum")):
+        golane.fetch_deps(worktree, work_dir)
 
     seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
     deadline = time.monotonic() + seconds
@@ -121,6 +129,7 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     stage = work_dir / "stage"
     interrupted = False
     replayed = 0
+    execs = 0
 
     while True:
         remaining = int(deadline - time.monotonic())
@@ -134,18 +143,19 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
             rss_limit_mb=getattr(args, "rss_limit_mb", None),
         )
         crashers = golane.harvest_crashers(pkg_dir, fuzz, stage, before=before)
+        execs += _count_execs(res.stdout + res.stderr)
         try:
             golane.harvest_gocache(work_dir, fuzz, out_dir / "corpus")
         except OSError as exc:
-            return "DISK-CAP", f"corpus sweep failed: {exc}", len(deduper.records)
+            return "DISK-CAP", f"corpus sweep failed: {exc}", len(deduper.records), execs
         # A nonzero exit is expected when the engine found a crasher; a
         # nonzero exit with no crasher is a failed run, not a clean one.
         if res.error or (res.returncode not in (0, 1) and not crashers):
             reason = res.error or (res.stderr or res.stdout or "fuzz round failed")[-400:]
-            return "RUN-FAIL", reason, len(deduper.records)
+            return "RUN-FAIL", reason, len(deduper.records), execs
         if res.returncode != 0 and not crashers and not res.timed_out:
             reason = (res.stderr or res.stdout or "fuzz round failed")[-400:]
-            return "RUN-FAIL", reason, 0
+            return "RUN-FAIL", reason, 0, execs
         for c in crashers:
             if replayed >= MAX_REPLAYS or time.monotonic() > deadline + 120:
                 break
@@ -174,14 +184,30 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     try:
         for rec in deduper.records.values():
             dedup.write_crash_record(out_dir, rec, fields)
+        if gen.harness_path and gen.harness_path.is_file():
+            hdir = out_dir / "harness"
+            hdir.mkdir(parents=True, exist_ok=True)
+            (hdir / gen.harness_path.name).write_text(
+                gen.harness_path.read_text()
+            )
     except OSError as exc:
-        return "DISK-CAP", f"record write failed: {exc}", len(deduper.records)
+        return "DISK-CAP", f"record write failed: {exc}", len(deduper.records), execs
 
     _resource_records(args, golane, pkg_dir, fuzz, worktree, work_dir,
                       mechanism, out_dir, fields, deduper.records)
 
     status = "INTERRUPTED" if interrupted else "OK"
-    return status, None, len(deduper.records)
+    return status, None, len(deduper.records), execs
+
+
+def _count_execs(text: str) -> int:
+    """Total execs from a fuzz round's `execs: N` counter lines."""
+    import re
+
+    total = 0
+    for m in re.finditer(r"execs:\s*(\d+)", text):
+        total += int(m.group(1))
+    return total
 
 
 RESOURCE_KINDS = {

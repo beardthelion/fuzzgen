@@ -49,3 +49,42 @@ def test_rust_lane_env_gate():
         assert reason  # honest TOOL-MISSING text
     argv = rustlane.run_argv("fuzzgen_decode", Path("/c"), Path("/s"), 60, 1)
     assert "-fork" in argv and "-rss_limit_mb=0" in argv
+
+
+def test_pkg_name_of_never_falls_back(tmp_path):
+    """pkg_name_of returns a real name or None, never a silent 'main'."""
+    import shutil
+    from fuzzgen.lanes import go as golane
+
+    repo = tmp_path / "r"
+    shutil.copytree(FIXTURES / "go" / "basic", repo)
+    pkg_dir = repo / "codec"
+    name = golane.pkg_name_of(repo, pkg_dir)
+    assert name == "codec"
+    empty = repo / "empty"
+    empty.mkdir()
+    assert golane.pkg_name_of(repo, empty) is None
+
+
+def test_c_lane_clang_build_and_run(tmp_path):
+    """Build and run the C fixture harness when clang exists."""
+    import shutil
+    import subprocess
+    import pytest
+
+    if not shutil.which("clang"):
+        pytest.skip("clang absent")
+    repo = tmp_path / "r"
+    shutil.copytree(FIXTURES / "c", repo)
+    sel = parse_selector("parser.c:parse")
+    res = clane.gen_harness(sel, repo)
+    out = tmp_path / "f"
+    proc = subprocess.run(
+        ["clang", "-g", "-O1", "-fsanitize=fuzzer,address,undefined",
+         "-fno-sanitize-recover=all", str(res.harness_path),
+         str(repo / "parser.c"), "-o", str(out)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    run = subprocess.run([str(out), "-runs=100"], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0

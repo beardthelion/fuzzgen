@@ -56,6 +56,30 @@ def gen_harness(sel: Selector, probe_res: ProbeResult, worktree: Path) -> RustGe
     crate_ident = sel.package.replace("-", "_")
     src = TMPL.read_text().replace("{{.Crate}}", crate_ident).replace("{{.Path}}", path)
     (fuzz_dir / f"{name}.rs").write_text(src)
+    # cargo-fuzz needs the fuzz crate scaffold: fuzz/Cargo.toml naming
+    # every target bin, or `cargo fuzz run` has nothing to build.
+    manifest = fuzz_dir.parent / "Cargo.toml"
+    manifest.write_text(
+        f"""[package]
+name = "fuzzgen-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+{crate_ident} = {{ path = ".." }}
+
+[[bin]]
+name = "{name}"
+path = "fuzz_targets/{name}.rs"
+test = false
+doc = false
+"""
+    )
     return RustGenResult("OK", target_path=fuzz_dir / f"{name}.rs")
 
 

@@ -110,3 +110,43 @@ def test_contained_argv_none(tmp_path):
         contain.MECH_NONE, ["go", "test"], tmp_path, tmp_path, env={"PATH": "/x"}
     )
     assert argv[0] == "env" and argv[-2:] == ["go", "test"]
+
+
+def test_bwrap_rung_executes_go_version(tmp_path):
+    """Forced bwrap rung: toolchain binds + PATH let contained go exec."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("bwrap") or not shutil.which("go"):
+        import pytest
+        pytest.skip("bwrap or go absent")
+    # Same capability gate detect() applies: kernels without unprivileged
+    # user namespaces fail the probe and the nobody rung is selected.
+    probe = subprocess.run(
+        ["bwrap", "--unshare-all", "--ro-bind", "/", "/", "true"],
+        capture_output=True, timeout=20,
+    )
+    if probe.returncode != 0:
+        import pytest
+        pytest.skip(f"bwrap namespaces unavailable: {probe.stderr.decode().strip()}")
+    wt = tmp_path / "wt"
+    wd = tmp_path / "wd"
+    wt.mkdir(); wd.mkdir()
+    argv = contain.contained_argv(
+        contain.MECH_BWRAP, ["go", "version"], wt, wd,
+        env={"GOCACHE": str(wd / "gocache")},
+    )
+    assert "--proc" in argv and "--dev" in argv and "--tmpfs" in argv
+    assert any(a == "PATH" or a.startswith("PATH=") for a in argv)
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "go version" in proc.stdout
+
+
+def test_unshare_rung_rejected(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError):
+        contain.contained_argv(
+            contain.MECH_UNSHARE, ["true"], tmp_path, tmp_path
+        )
