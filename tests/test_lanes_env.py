@@ -423,15 +423,59 @@ def test_rust_generic_recv_builds_under_bwrap(tmp_path):
     (crate / "Cargo.toml").write_text(
         '[package]\nname = "krate"\nversion = "0.1.0"\nedition = "2021"\n')
     (crate / "src" / "lib.rs").write_text(
-        "pub struct Inner;\n"
+        "pub struct Inner;\npub struct Other;\n"
         "pub struct Key<K> { _k: std::marker::PhantomData<K> }\n"
         "impl Key<Inner> { pub fn from_bytes(d: &[u8]) -> Self "
+        "{ Key { _k: std::marker::PhantomData } } }\n"
+        "impl Key<Other> { pub fn from_bytes(d: &[u8]) -> Self "
         "{ Key { _k: std::marker::PhantomData } } }\n")
     sel = parse_selector("krate::Key::from_bytes", "rust")
     res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
                                                 args=["&[u8]"]), tmp_path)
     assert res.status == "OK"
+    # Two impls: rustc cannot infer K, so the emitted turbofish is the
+    # only thing that makes this compile (E0283 otherwise).
     assert "Key::<krate::Inner>::from_bytes(data)" in res.target_path.read_text()
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    tc_env = rustlane.stage_rust_toolchain(wd)
+    assert rustlane.fetch_deps(crate, wd)
+    res = rustlane.build(crate, crate, "fuzzgen_from_bytes",
+                         contain.MECH_BWRAP, wd, tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    stage = tmp_path / "stage"
+    res = rustlane.fuzz_round(crate, crate, "fuzzgen_from_bytes",
+                              corpus, stage, 8, contain.MECH_BWRAP, wd,
+                              tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+
+
+def test_rust_bound_trait_pick_under_bwrap(tmp_path):
+    """No concrete impls: sorted-first bound-trait impl wins and builds."""
+    _bwrap_or_skip()
+    from fuzzgen import contain
+    crate = tmp_path / "krate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "krate"\nversion = "0.1.0"\nedition = "2021"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "pub trait Cur { type VK; }\n"
+        "pub struct BImpl;\npub struct AImpl;\n"
+        "impl Cur for BImpl { type VK = u8; }\n"
+        "impl Cur for AImpl { type VK = u8; }\n"
+        "pub struct Key<K: Cur> { _k: std::marker::PhantomData<K> }\n"
+        "impl<K: Cur> Key<K> { pub fn from_bytes(d: &[u8]) -> Self "
+        "{ Key { _k: std::marker::PhantomData } } }\n")
+    sel = parse_selector("krate::Key::from_bytes", "rust")
+    res = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes",
+                                                args=["&[u8]"]), tmp_path)
+    assert res.status == "OK"
+    # Sorted bound-trait impls: AImpl < BImpl, so AImpl is picked.
+    assert "Key::<krate::AImpl>::from_bytes(data)" in \
+        res.target_path.read_text()
+    assert res.reason and "AImpl" in res.reason
     wd = tmp_path / "wd"
     wd.mkdir()
     tc_env = rustlane.stage_rust_toolchain(wd)

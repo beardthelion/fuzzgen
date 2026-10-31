@@ -154,9 +154,11 @@ go test's default 10m -timeout would have killed the run; with
 exec figure for that run predates the cumulative-line recount fix
 and was inflated; a 30s recount leg shows `{"execs":673746}` which
 equals the last `execs:` line in its fuzz_stderr.txt exactly. The
-11m leg's tail (last line `execs: 13970625`, a real round count):
+11m leg's byte-exact `tail -6` from
+`/var/tmp/g17/go/gjson-690362d6/github.com-x2f-tidwall-x2f-gjson.parse/fuzz_stderr.txt`:
 
 ```
+fuzz: elapsed: 10m51s, execs: 13803089 (20719/sec), new interesting: 166 (total: 167)
 fuzz: elapsed: 10m54s, execs: 13864920 (20613/sec), new interesting: 166 (total: 167)
 fuzz: elapsed: 10m57s, execs: 13928167 (21079/sec), new interesting: 166 (total: 167)
 fuzz: elapsed: 10m59s, execs: 13970625 (20308/sec), new interesting: 166 (total: 167)
