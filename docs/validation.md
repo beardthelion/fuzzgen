@@ -142,7 +142,20 @@ edits, `{"status":"OK","execs":102340,"crashes":0}` under bwrap.
 github.com/tidwall/gjson.Parse` under bwrap -> `{"status":"OK",
 "execs":1305563523}`: go test's default 10m -timeout would have
 killed the run; with `-timeout 0s` it ran the full 15m and exited
-cleanly. A second 12m leg captured the raw tail; see below.
+cleanly. An 11m leg captured the raw tail; last lines of
+fuzz_stderr.txt (rung line is line 1 of the file):
+
+```
+fuzz: elapsed: 10m51s, execs: 13803089 (20719/sec), new interesting: 166 (total: 167)
+fuzz: elapsed: 10m54s, execs: 13864920 (20613/sec), new interesting: 166 (total: 167)
+fuzz: elapsed: 10m57s, execs: 13928167 (21079/sec), new interesting: 166 (total: 167)
+fuzz: elapsed: 10m59s, execs: 13970625 (20308/sec), new interesting: 166 (total: 167)
+PASS
+ok  	gitlab.com/tidwall/gjson	659.107s
+```
+
+`ok ... 659.107s` means the round ran past the 10m mark and exited
+cleanly at the fuzztime bound, 1.06B execs.
 
 ### Historic crash leg (lighthouse ssz, commit 561167fa1)
 

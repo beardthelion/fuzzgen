@@ -217,10 +217,10 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
 
 
 def _write_round_stderr(out_dir, mechanism: str, res) -> None:
-    """fuzz_stderr.txt: rung line first, then the raw round stderr."""
+    """fuzz_stderr.txt: rung line first, then raw round output."""
     try:
         (out_dir / "fuzz_stderr.txt").write_text(
-            contain.rung_label(mechanism) + "\n" + res.stderr)
+            contain.rung_label(mechanism) + "\n" + res.stderr + res.stdout)
     except OSError:
         pass
 
