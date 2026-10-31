@@ -136,9 +136,12 @@ def test_rust_lane_bwrap_rung(tmp_path):
     (crate / "fuzz").mkdir(parents=True)
     wd = tmp_path / "wd"
     wd.mkdir()
+    # cargo lives under $HOME, which bwrap does not bind; the staged
+    # toolchain copy inside work_dir is what the real lane uses.
+    tc_env = rustlane.stage_rust_toolchain(wd)
     argv = contain.contained_argv(
-        contain.MECH_BWRAP, ["cargo", "--version"], crate, wd,
-        env=rustlane._cargo_env(wd),
+        contain.MECH_BWRAP, ["cargo", "+nightly", "--version"], crate, wd,
+        env=rustlane._cargo_env(wd, tc_env),
         chdir=str(crate / "fuzz"),
     )
     assert "--chdir" in argv
@@ -146,3 +149,47 @@ def test_rust_lane_bwrap_rung(tmp_path):
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert "cargo" in proc.stdout
+
+
+def test_rust_lane_bwrap_fuzz_round(tmp_path):
+    """Forced bwrap: real cargo-fuzz build + short round, out-dir corpus."""
+    import shutil
+    import subprocess
+    import pytest
+    from fuzzgen import contain
+
+    if not shutil.which("bwrap") or not shutil.which("cargo"):
+        pytest.skip("bwrap or cargo absent")
+    probe = subprocess.run(
+        ["bwrap", "--unshare-all", "--ro-bind", "/", "/", "true"],
+        capture_output=True, timeout=20,
+    )
+    if probe.returncode != 0:
+        pytest.skip("bwrap namespaces unavailable on this kernel")
+    # Minimal crate with no external deps (the probe fixture's lib.rs
+    # imports arbitrary/ssz and is not buildable).
+    crate = tmp_path / "basic"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "basic"\nversion = "0.1.0"\nedition = "2021"\n')
+    (crate / "src" / "lib.rs").write_text(
+        "pub fn decode(data: &[u8]) -> u64 {\n"
+        "    data.iter().fold(0u64, |a, b| a.wrapping_add(*b as u64))\n"
+        "}\n")
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    sel = parse_selector("basic::decode", "rust")
+    gen = rustlane.gen_harness(sel, ProbeResult("OK", kind="bytes"), crate)
+    assert gen.status == "OK"
+    tc_env = rustlane.stage_rust_toolchain(wd)
+    assert rustlane.fetch_deps(crate, wd)
+    res = rustlane.build(crate, "fuzzgen_decode", contain.MECH_BWRAP, wd,
+                         tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+    corpus = tmp_path / "out-corpus"  # outside the crate and work_dir
+    corpus.mkdir()
+    stage = tmp_path / "out-stage"
+    res = rustlane.fuzz_round(crate, "fuzzgen_decode", corpus, stage, 10,
+                              contain.MECH_BWRAP, wd, tc_env=tc_env)
+    assert res.returncode == 0, res.stderr[-600:]
+    assert "#" in res.stderr or "exec" in res.stderr

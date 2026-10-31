@@ -139,10 +139,12 @@ def contained_argv(
     pids: int = 512,
     rlimits: dict[str, str] | None = None,
     chdir: str | None = None,
+    rw_mounts: list[tuple[Path, Path]] | None = None,
 ) -> list[str]:
     """Wrap cmd for the rung. env is pre-scrubbed by the caller."""
     env = scrub_env(env)
     mounts = mounts or []
+    rw_mounts = rw_mounts or []
     wt = str(Path(worktree).resolve())
     wd = str(Path(work_dir).resolve())
 
@@ -173,6 +175,8 @@ def contained_argv(
                  "--setenv", "PATH", _toolchain_path()]
         for src, dst in mounts:
             argv += ["--ro-bind", str(src), str(dst)]
+        for src, dst in rw_mounts:
+            argv += ["--bind", str(src), str(dst)]
         if chdir:
             argv += ["--chdir", chdir]
         return argv + env_args + ["--", *cmd]

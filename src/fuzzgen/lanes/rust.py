@@ -200,10 +200,18 @@ def fuzz_round(crate: Path, name: str, corpus: Path, stage: Path, seconds: int,
            f"-artifact_prefix={stage}/", f"-max_total_time={seconds}",
            f"-fork={jobs}", "-ignore_crashes=1", "-ignore_ooms=1",
            "-ignore_timeouts=1", "-rss_limit_mb=0"]
+    # Record dirs the engine must write inside the ns get rw binds when
+    # they live outside the bound worktree/work_dir (bwrap case).
+    rw = []
+    for p in (corpus, stage):
+        rp = Path(p).resolve()
+        if not str(rp).startswith(str(crate.resolve())) and \
+           not str(rp).startswith(str(work_dir.resolve())):
+            rw.append((rp, rp))
     argv = contain.contained_argv(
         mechanism, cmd, crate, work_dir, env=_cargo_env(work_dir, tc_env),
         rlimits={**_asan_rlimits(), "cpu": str(seconds + 300)},
-        chdir=str(crate / "fuzz"),
+        chdir=str(crate / "fuzz"), rw_mounts=rw,
     )
     return runner.run_bounded(argv, timeout=seconds + 300, cwd=crate / "fuzz")
 

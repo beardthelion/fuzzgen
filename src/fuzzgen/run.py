@@ -245,8 +245,11 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
         reason = err[:300] if len(err) <= 700 else f"{err[:300]}\n...\n{err[-400:]}"
         return "BUILD-FAIL", reason, 0, 0
     seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
-    corpus = out_dir / "corpus"
+    # The engine writes new corpus inputs into this dir; under bwrap only
+    # work_dir is bound rw, so corpus lives there and gets swept out.
+    corpus = work_dir / "corpus"
     corpus.mkdir(parents=True, exist_ok=True)
+    out_corpus = out_dir / "corpus"
     stage = work_dir / "stage"
     deduper = dedup.Deduper()
     execs = 0
@@ -256,6 +259,10 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
         jobs=getattr(args, "jobs", 1) or 1, tc_env=tc_env,
     )
     execs += _count_execs(res.stdout + res.stderr)
+    out_corpus.mkdir(parents=True, exist_ok=True)
+    for p in corpus.iterdir():
+        if p.is_file() and not p.is_symlink():
+            (out_corpus / p.name).write_bytes(p.read_bytes())
     crashers = rustlane.harvest_crashers(crate, name, stage)
     # libFuzzer: rc 0 is clean; any nonzero with no harvested crasher is a
     # failed round (missing target, fork error), not a clean one.

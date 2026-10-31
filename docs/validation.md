@@ -76,9 +76,11 @@ ran against a standalone checkout of the real `ssz` crate at `561167fa1^`
 (same source, minimal manifest). The pasted result used a hand-written
 harness, `decode_length(data, 1, 4)`: generated harnesses are single-arg
 only, and 3-arg selectors correctly resolve to NEEDS-HAND. The gate test
-`tests/test_historic.py` automates exactly this leg (fetch by sha, pre-fix
-checkout, hand harness, lane records) behind `FUZZGEN_GATE_LIVE=1` and
-passes in ~30s.
+`tests/test_historic.py` automates the same leg (fetch by sha, pre-fix
+checkout, hand-written target, lane `build`/`fuzz_round` under the
+detected rung, crash record) behind `FUZZGEN_GATE_LIVE=1`; under bwrap
+it passes in ~160s with a crash record whose stack names
+`decode_length`.
 
 **Pre-fix (561167fa1^), rediscovered in seconds:**
 
@@ -104,18 +106,22 @@ and confirmed absent after the fix.
 
 ## Lane status per rung
 
-- nobody (bounded-not-contained), this machine's rung: go validated
-  end-to-end (gjson 3.57M execs, planted-bug rediscovery); rust
-  validated end-to-end (httparse 19.06-19.57M execs under
-  `fuzzgen run`, toolchain staged into the work dir).
-- bwrap: selected and exercised where unprivileged user namespaces
-  exist. On this kernel userns is disabled, so the forced-rung tests
-  (go `go version`, rust `cargo --version`, --chdir argv shape) verify
-  argv correctness and skip the exec on this host; on a userns host
-  both execute.
-- docker/sudo-docker: image-gated, unexercised here (no toolchain
-  image present).
-- c lane: `unvalidated` on this machine (no clang); the lane test runs
+- bwrap (namespace-contained, networkDenied): selected and exercised
+  on hosts with unprivileged user namespaces. On a userns-enabled host
+  the full httparse leg ran inside real bwrap: `fuzzgen run --repo
+  httparse --lang rust --seconds 60 httparse::parse_chunk_size` ->
+  `{"status":"OK","execs":17534606,"crashes":0}` with 121 corpus
+  entries swept from work_dir into out_dir. The forced-rung tests
+  (`go version`, `cargo --version`, a real 10s `cargo fuzz run` on a
+  fixture crate with an out-of-crate corpus, --chdir argv shape) all
+  execute there; they skip only on kernels without userns.
+- nobody (bounded-not-contained): go validated end-to-end (gjson
+  3.57M execs, planted-bug rediscovery); rust validated end-to-end
+  (httparse 19.06-19.57M execs under `fuzzgen run`, toolchain staged
+  into the work dir).
+- docker/sudo-docker: image-gated, unexercised (no toolchain image
+  present).
+- c lane: `unvalidated` where clang is absent; the lane test runs
   clane.gen_harness + clane.build + clane.run_argv wherever clang
   exists.
 - mech none: argv only; `--no-containment` stays gated behind
