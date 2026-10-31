@@ -28,6 +28,21 @@ TOOLCHAIN_IMAGE = "fuzzgen-toolchain"
 # Outbound-denying rungs.
 NETWORK_DENIED = frozenset({MECH_DOCKER, MECH_SUDO_DOCKER, MECH_BWRAP, MECH_UNSHARE})
 
+MECH_DETAIL = {
+    MECH_DOCKER: "docker daemon as this user",
+    MECH_SUDO_DOCKER: "docker via sudo -n",
+    MECH_BWRAP: "bubblewrap user/net/mount namespaces",
+    MECH_NOBODY: "resource bounds only: open network, shared uid",
+    MECH_UNSHARE: "unprivileged user/net namespaces",
+    MECH_NONE: "no containment (opt-in)",
+    MECH_REFUSE: "no containment mechanism available",
+}
+
+
+def rung_label(mechanism: str) -> str:
+    """'rung: bwrap (bubblewrap user/net/mount namespaces)' for records."""
+    return f"rung: {mechanism} ({MECH_DETAIL.get(mechanism, mechanism)})"
+
 # Only these vars ever cross the boundary into a contained build/run. No
 # GIT_SSH_COMMAND, GITHUB_TOKEN, AWS_*, or registry credentials. FUZZGEN_*
 # vars (probe paths, flags) are host-local and never cross either.

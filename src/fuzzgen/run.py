@@ -215,12 +215,22 @@ def _run_go(args, golane, sel, gen, worktree, work_dir, mechanism, out_dir, fiel
     return status, None, len(deduper.records), execs
 
 
-def _build_fail_reason(err: str, out_dir) -> str:
-    """error[/error:/--> lines first; full stderr saved under out_dir."""
+def _write_round_stderr(out_dir, mechanism: str, res) -> None:
+    """fuzz_stderr.txt: rung line first, then the raw round stderr."""
+    try:
+        (out_dir / "fuzz_stderr.txt").write_text(
+            contain.rung_label(mechanism) + "\n" + res.stderr)
+    except OSError:
+        pass
+
+
+def _build_fail_reason(err: str, out_dir, rung: str = "") -> str:
+    """error[/error:/--> lines first; rung + full stderr under out_dir."""
     import re
 
     try:
-        (out_dir / "build_stderr.txt").write_text(err)
+        head = f"{rung}\n" if rung else ""
+        (out_dir / "build_stderr.txt").write_text(head + err)
     except OSError:
         pass
     errs = [l for l in err.splitlines()
@@ -253,7 +263,9 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
     if res.error or res.timed_out:
         return "RUN-FAIL", res.error or "build timeout", 0, 0
     if res.returncode != 0:
-        return "BUILD-FAIL", _build_fail_reason(res.stderr or res.stdout, out_dir), 0, 0
+        return "BUILD-FAIL", _build_fail_reason(
+            res.stderr or res.stdout, out_dir,
+            rung=contain.rung_label(mechanism)), 0, 0
     seconds = getattr(args, "seconds", config.DEFAULT_FUZZ_SECONDS)
     # The engine writes new corpus inputs into this dir; under bwrap only
     # work_dir is bound rw, so corpus lives there and gets swept out.
@@ -269,10 +281,7 @@ def _run_rust(args, rustlane, sel, probe_res, worktree, work_dir, mechanism,
         jobs=getattr(args, "jobs", 1) or 1, tc_env=tc_env,
     )
     execs += _count_execs(res.stdout + res.stderr)
-    try:
-        (out_dir / "fuzz_stderr.txt").write_text(res.stderr)
-    except OSError:
-        pass
+    _write_round_stderr(out_dir, mechanism, res)
     out_corpus.mkdir(parents=True, exist_ok=True)
     for p in corpus.iterdir():
         if p.is_file() and not p.is_symlink():

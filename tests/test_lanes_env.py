@@ -280,3 +280,21 @@ def test_build_fail_reason_error_first(tmp_path):
     assert reason.startswith("error[E0603]")
     saved = (tmp_path / "build_stderr.txt").read_text()
     assert "warning: w0" in saved and "error[E0603]" in saved
+
+
+def test_fuzz_stderr_names_detected_rung(tmp_path):
+    """Line 1 of fuzz_stderr.txt names the rung after a short round."""
+    from fuzzgen import contain
+    from fuzzgen.run import _write_round_stderr
+    from fuzzgen import runner
+
+    mech, _, _ = contain.detect()
+    res = runner.Result(argv=[], returncode=0, stdout="",
+                        stderr="INFO: fake round", timed_out=False,
+                        duration_s=0.1, error=None)
+    out = tmp_path / "out"
+    out.mkdir()
+    _write_round_stderr(out, mech, res)
+    line1 = (out / "fuzz_stderr.txt").read_text().splitlines()[0]
+    assert mech in line1
+    assert contain.MECH_DETAIL[mech] in line1

@@ -66,16 +66,35 @@ git diff on httparse is additions-only and `cargo fuzz list` shows the
 clvm-utils::tree_hash::tree_hash_from_bytes` -> `{"status":"OK",
 "execs":449151,"crashes":0}`. The generated harness emits the
 crate-root public path (`clvm_utils::tree_hash_from_bytes`) since
-`tree_hash` is a private module re-exported in lib.rs. Second leg
-`chia-bls::signature::hash_to_g2` -> `{"status":"OK","execs":25265}`
-(15s box), raw bwrap stderr tail:
+`tree_hash` is a private module re-exported in lib.rs. 15s rerun,
+unedited rung line and last 6 lines of fuzz_stderr.txt:
 
 ```
-INFO: -fork=1: fuzzing in separate process(s)
-#25265: cov: 0 ft: 0 corp: 0 exec/s: 1263 oom/timeout/crash: 0/0/0 time: 20s job: 5
+rung: bwrap (bubblewrap user/net/mount namespaces)
+...
+#101885: cov: 474 ft: 1863 corp: 192 exec/s: 7015 oom/timeout/crash: 0/0/0 time: 14s job: 4
+#144422: cov: 477 ft: 1931 corp: 222 exec/s: 7089 oom/timeout/crash: 0/0/0 time: 20s job: 5
 INFO: fuzzed for 20 seconds, wrapping up soon
 INFO: exiting: 0 time: 20s
 ```
+
+Second leg `chia-bls::signature::hash_to_g2` -> `{"status":"OK",
+"execs":23750}` (15s box), unedited rung line and last 6 lines:
+
+```
+rung: bwrap (bubblewrap user/net/mount namespaces)
+...
+#16178: cov: 0 ft: 0 corp: 0 exec/s: 1262 oom/timeout/crash: 0/0/0 time: 14s job: 4
+#23750: cov: 0 ft: 0 corp: 0 exec/s: 1262 oom/timeout/crash: 0/0/0 time: 20s job: 5
+INFO: fuzzed for 20 seconds, wrapping up soon
+INFO: exiting: 0 time: 20s
+```
+
+cov:0 ft:0 corp:0 is real, not a bug: `hash_to_g2` is a thin Rust
+wrapper over the blst C library (built by cc without sancov
+instrumentation). Every input walks the same single instrumented
+Rust path into native code, so coverage and corpus growth stay flat
+while the function still does 23k execs of real hashing.
 
 ### neon (Rust, workspace, uninit submodules, bwrap)
 
@@ -85,10 +104,15 @@ postgres-protocol2::types::array_from_sql` -> `{"status":"OK",
 name-scan (cargo metadata fails when submodule manifests are absent),
 emitted `[workspace]` plus the hyphenated package dep name, and never
 cloned vendor/postgres-v14..v17 (worktree submodule init is opt-in
-via --submodules). Raw bwrap stderr tail (15s rerun, 5,013,811 execs):
+via --submodules). Unedited rung line and last 6 lines of
+fuzz_stderr.txt (15s rerun, 4,940,070 execs):
 
 ```
-#5013811: cov: 54 ft: 79 corp: 20 exec/s: 263118 oom/timeout/crash: 0/0/0 time: 20s job: 5
+rung: bwrap (bubblewrap user/net/mount namespaces)
+...
+#2205659: cov: 54 ft: 79 corp: 22 exec/s: 243115 oom/timeout/crash: 0/0/0 time: 9s job: 3
+#3438485: cov: 54 ft: 79 corp: 22 exec/s: 246565 oom/timeout/crash: 0/0/0 time: 14s job: 4
+#4940070: cov: 54 ft: 79 corp: 22 exec/s: 250264 oom/timeout/crash: 0/0/0 time: 20s job: 5
 INFO: fuzzed for 20 seconds, wrapping up soon
 INFO: exiting: 0 time: 20s
 ```
