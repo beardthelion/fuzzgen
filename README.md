@@ -118,3 +118,7 @@ Design notes: [docs/SPEC.md](docs/SPEC.md).
 - [autocatalytic-harness](https://github.com/beardthelion/autocatalytic-harness): the audit harness whose hunt stages call for fuzzing and consume these records
 - [release-surface-diff](https://github.com/beardthelion/release-surface-diff): picks newly exposed entry points worth fuzzing
 - [cve-variant-sweep](https://github.com/beardthelion/cve-variant-sweep): static rules from past fixes, for the bug classes fuzzing does not reach
+
+## License
+
+MIT. See [LICENSE](LICENSE).
